@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 func getGitSubcommand(args []string) string {
 	for i := 0; i < len(args); i++ {
@@ -135,7 +135,7 @@ func (g *GitDiffParser) Parse(output string) string {
 			continue
 		}
 		// Pass through everything else to preserve EOF markers, renames, and file modes
-		result = append(result, line)
+		result = append(result, cleanLine)
 	}
 	return strings.Join(result, "\n")
 }
@@ -227,7 +227,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 					currentDate = fields[1] + " " + fields[2] + " " + fields[4]
 				}
 				continue
-			} else if strings.HasPrefix(cleanLine, "Merge: ") || strings.HasPrefix(cleanLine, "gpg: ") || strings.HasPrefix(cleanLine, "Primary key ") {
+			} else if strings.HasPrefix(cleanLine, "Merge: ") || strings.HasPrefix(cleanLine, "gpg: ") || strings.HasPrefix(cleanLine, "Primary key ") || strings.HasPrefix(cleanLine, "Good \"git\" signature") {
 				continue
 			} else if cleanLine == "" || strings.HasPrefix(cleanLine, "    ") {
 				if currentSubject == "" && currentCommit != "" && trimmed != "" {
@@ -266,7 +266,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 		}
 
 		// Pass through all remaining lines (including metadata, empty lines, and diff chunks)
-		result = append(result, line)
+		result = append(result, cleanLine)
 	}
 
 	flushCommit()

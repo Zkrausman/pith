@@ -245,8 +245,16 @@ func (g *GitHubParser) CanParse(cmd string, args []string) bool {
 		"config": true, "label": true, "alias": true,
 	}
 	var cmds []string
-	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-") && known[arg] {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			// Skip values for known global flags that take arguments
+			if arg == "-R" || arg == "--repo" || arg == "--jq" || arg == "-q" || arg == "--limit" || arg == "-L" {
+				i++
+			}
+			continue
+		}
+		if known[arg] {
 			cmds = append(cmds, arg)
 		}
 	}
