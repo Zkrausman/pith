@@ -12,7 +12,7 @@ func getGitSubcommand(args []string) string {
 			return arg
 		}
 		// These global flags consume the next argument
-		if arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--super-prefix" {
+		if arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--super-prefix" || arg == "--config-env" || arg == "--attr-source" {
 			i++
 		}
 	}
@@ -180,52 +180,24 @@ func (c *CompositeGitParser) CanParse(cmd string, args []string) bool {
 	return strings.Contains(cmd, "git ") && (strings.Contains(cmd, ";") || strings.Contains(cmd, "&"))
 }
 func (c *CompositeGitParser) Parse(output string) string {
-	// A more effective approach for composite git output:
-	// 1. Split into lines
-	// 2. Filter out known git noise (headers, use-instructions, etc.)
-	// 3. For logs, condense the commit headers
-	// 4. For diffs, keep only +/- lines and @@ markers
-
-	lines := strings.Split(output, "\n")
+	lines := strings.Split(output, "
+")
 	var result []string
 
-	// Track state for log condensation within composite output
 	var currentCommit, currentAuthor, currentDate, currentSubject string
+
+	flushCommit := func() {
+		if currentCommit != "" {
+			result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
+			currentCommit = ""
+		}
+	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Skip standard status/branch noise
-		if trimmed == "" || strings.HasPrefix(trimmed, "(use ") ||
-			strings.HasPrefix(trimmed, "On branch") || strings.HasPrefix(trimmed, "Your branch") ||
-			strings.Contains(trimmed, "nothing to commit") || strings.Contains(trimmed, "no changes added") ||
-			strings.HasPrefix(trimmed, "Changes not staged") || strings.HasPrefix(trimmed, "Changes to be committed") ||
-			strings.HasPrefix(trimmed, "Untracked files") {
-			continue
-		}
-
-		// Handle diff noise
-		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
-			continue
-		}
-		if strings.HasPrefix(line, "@@") {
-			result = append(result, "@@")
-			continue
-		}
-		if strings.HasPrefix(line, "--- a/") {
-			result = append(result, "--- "+strings.TrimPrefix(line, "--- a/"))
-			continue
-		}
-		if strings.HasPrefix(line, "+++ b/") {
-			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
-			continue
-		}
-
-		// Log processing
 		if strings.HasPrefix(line, "commit ") {
-			if currentCommit != "" {
-				result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-			}
+			flushCommit()
 			currentCommit = strings.TrimPrefix(line, "commit ")
 			if len(currentCommit) > 7 {
 				currentCommit = currentCommit[:7]
@@ -246,32 +218,54 @@ func (c *CompositeGitParser) Parse(output string) string {
 			}
 			continue
 		} else if strings.HasPrefix(line, "    ") && currentSubject == "" && currentCommit != "" {
-			currentSubject = strings.TrimSpace(line)
+			currentSubject = trimmed
 			continue
 		}
 
-		// If we finished a log entry and moved on to something else (status/diff lines)
 		if currentCommit != "" && !strings.HasPrefix(line, "    ") {
-			result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-			currentCommit = ""
+			flushCommit()
 		}
 
-		// Keep diff changes
-		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
+			continue
+		}
+		if strings.HasPrefix(line, "@@") {
+			result = append(result, "@@")
+			continue
+		}
+		if strings.HasPrefix(line, "--- a/") {
+			result = append(result, "--- "+strings.TrimPrefix(line, "--- a/"))
+			continue
+		}
+		if strings.HasPrefix(line, "+++ b/") {
+			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
+			continue
+		}
+
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ") {
+			result = append(result, line)
+			continue
+		}
+		
+		if line == "" {
 			result = append(result, line)
 			continue
 		}
 
-		// Default to keeping the line (like status file names)
-		result = append(result, trimmed)
+		if strings.HasPrefix(trimmed, "(use ") ||
+			strings.HasPrefix(trimmed, "On branch") || strings.HasPrefix(trimmed, "Your branch") ||
+			strings.Contains(trimmed, "nothing to commit") || strings.Contains(trimmed, "no changes added") ||
+			strings.HasPrefix(trimmed, "Changes not staged") || strings.HasPrefix(trimmed, "Changes to be committed") ||
+			strings.HasPrefix(trimmed, "Untracked files") {
+			continue
+		}
+
+		result = append(result, line)
 	}
 
-	// Final flush if log was at the end
-	if currentCommit != "" {
-		result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-	}
-
-	return strings.Join(result, "\n")
+	flushCommit()
+	return strings.Join(result, "
+")
 }
 
 // GitShowParser (NEW)

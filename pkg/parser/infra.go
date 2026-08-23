@@ -236,13 +236,7 @@ func (g *GitHubParser) CanParse(cmd string, args []string) bool {
 	if !MatchCommand(cmd, "gh") {
 		return false
 	}
-	// Check the first few arguments for known noisy commands
-	checkLimit := len(args)
-	if checkLimit > 3 {
-		checkLimit = 3
-	}
-	for i := 0; i < checkLimit; i++ {
-		arg := args[i]
+	for _, arg := range args {
 		if arg == "list" || arg == "search" || arg == "checks" || arg == "status" {
 			return true
 		}
