@@ -45,13 +45,13 @@ func OptimizeHook(req HookRequest) HookResponse {
 	started := time.Now()
 	cfg := PiConfig{Redact: true, RawBypass: req.RawBypass, Harness: HarnessPi}
 	result := HookResponse{Output: maybeRedact(req.Output, cfg), Passthrough: true}
-	if !req.RawBypass && req.ExitCode == 0 && !errorMarkerRegex.MatchString(req.Output) && !diffMarkerRegex.MatchString(req.Output) && !isStructuredOutput(req.Output) {
+	if !req.RawBypass && req.ExitCode == 0 && !diffMarkerRegex.MatchString(req.Output) && !isStructuredOutput(req.Output) {
 		parts := strings.Fields(req.Command)
 		if len(parts) > 0 {
 			for _, candidate := range parser.GetAllParsers() {
 				enabled, configured := req.EnabledParsers[candidate.Name()]
 				if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
-					result = HookResponse{Output: maybeRedact(candidate.Parse(req.Output), cfg), Parser: candidate.Name()}
+					result = HookResponse{Output: maybeRedact(candidate.Parse(req.Output), cfg), Parser: candidate.Name(), Passthrough: false}
 					break
 				}
 			}

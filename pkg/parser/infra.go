@@ -228,14 +228,12 @@ func (g *GoToolCoverParser) Parse(output string) string {
 	return strings.Join(result, "\n")
 }
 
-// GitHubParser (NEW)
+// GitHubParser (UPDATED)
 type GitHubParser struct{}
 
 func (g *GitHubParser) Name() string { return "github" }
 func (g *GitHubParser) CanParse(cmd string, args []string) bool {
-	return MatchCommand(cmd, "gh") && len(args) > 0 &&
-		(args[0] == "issue" || args[0] == "pr" || args[0] == "release" || args[0] == "repo" || args[0] == "run") &&
-		(strings.Contains(strings.Join(args, " "), " list") || strings.Contains(strings.Join(args, " "), " view"))
+	return MatchCommand(cmd, "gh")
 }
 func (g *GitHubParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -247,36 +245,20 @@ func (g *GitHubParser) Parse(output string) string {
 			continue
 		}
 
+		// Skip spinner/progress lines
+		if strings.Contains(trimmed, "Resolving deltas") || strings.Contains(trimmed, "remote: Compressing") {
+			continue
+		}
+
 		// Skip header lines if present
 		if strings.HasPrefix(trimmed, "Showing ") || strings.HasPrefix(trimmed, "NAME") || strings.HasPrefix(trimmed, "TITLE") {
 			continue
 		}
 
-		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 {
-			// For issues/PRs/repos: ID/NAME  TITLE/DESCRIPTION  STATUS/DATE
-			id := fields[0]
-			title := fields[1]
+		result = append(result, trimmed)
 
-			status := ""
-			if len(fields) >= 3 {
-				status = fields[2]
-				if len(status) > 15 {
-					status = status[:15]
-				}
-			}
-
-			if status != "" {
-				result = append(result, fmt.Sprintf("%s | %s | %s", id, title, status))
-			} else {
-				result = append(result, fmt.Sprintf("%s | %s", id, title))
-			}
-		} else {
-			result = append(result, trimmed)
-		}
-
-		if len(result) > 25 {
-			result = append(result, "... (truncated gh list)")
+		if len(result) > 100 {
+			result = append(result, "... (truncated gh output)")
 			break
 		}
 	}

@@ -118,8 +118,8 @@ Zkrausman/resume       public  2026-01-01T12:00:00Z
 	}
 
 	output := p.Parse(input)
-	if !strings.Contains(output, "Zkrausman/Pith | private | 2026-03-16T06:0") {
-		t.Errorf("GitHubParser failed to format repo list, got:\n%s", output)
+	if !strings.Contains(output, "Zkrausman/Pith         private 2026-03-16T06:01:28Z") {
+		t.Errorf("GitHubParser failed to pass through repo list, got:\n%s", output)
 	}
 }
 

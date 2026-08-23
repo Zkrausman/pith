@@ -5,6 +5,18 @@ import (
 	"strings"
 )
 
+func getGitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if !strings.HasPrefix(args[i], "-") {
+			return args[i]
+		}
+		if args[i] == "-C" || args[i] == "-c" || args[i] == "--git-dir" || args[i] == "--work-tree" {
+			i++
+		}
+	}
+	return ""
+}
+
 // GitStatusParser (Existing)
 type GitStatusParser struct{}
 
@@ -13,7 +25,7 @@ func (g *GitStatusParser) CanParse(cmd string, args []string) bool {
 	if cmd != "git" || len(args) == 0 {
 		return false
 	}
-	sub := args[0]
+	sub := getGitSubcommand(args)
 	return sub == "status" || sub == "add" || sub == "commit" || sub == "push"
 }
 func (g *GitStatusParser) Parse(output string) string {
@@ -49,7 +61,7 @@ type GitLogParser struct{}
 
 func (g *GitLogParser) Name() string { return "git_log" }
 func (g *GitLogParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && len(args) > 0 && args[0] == "log"
+	return cmd == "git" && getGitSubcommand(args) == "log"
 }
 func (g *GitLogParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -93,7 +105,7 @@ type GitDiffParser struct{}
 
 func (g *GitDiffParser) Name() string { return "git_diff" }
 func (g *GitDiffParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && len(args) > 0 && args[0] == "diff"
+	return cmd == "git" && getGitSubcommand(args) == "diff"
 }
 func (g *GitDiffParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -129,7 +141,7 @@ type GitBranchParser struct{}
 
 func (g *GitBranchParser) Name() string { return "git_branch" }
 func (g *GitBranchParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && len(args) > 0 && args[0] == "branch"
+	return cmd == "git" && getGitSubcommand(args) == "branch"
 }
 func (g *GitBranchParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -268,4 +280,22 @@ func (c *CompositeGitParser) Parse(output string) string {
 	}
 
 	return strings.Join(final, "\n")
+}
+
+// GitShowParser (NEW)
+type GitShowParser struct{
+	comp *CompositeGitParser
+}
+
+func (g *GitShowParser) Name() string { return "git_show" }
+func (g *GitShowParser) CanParse(cmd string, args []string) bool {
+	return cmd == "git" && getGitSubcommand(args) == "show"
+}
+func (g *GitShowParser) Parse(output string) string {
+	if g.comp == nil {
+		g.comp = &CompositeGitParser{}
+	}
+	// Git show output looks just like a composite of git log and git diff!
+	// We can safely pass it through CompositeGitParser.
+	return g.comp.Parse(output)
 }

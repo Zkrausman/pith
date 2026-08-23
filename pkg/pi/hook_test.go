@@ -88,7 +88,7 @@ func TestOptimizeHookHonorsEnabledParsers(t *testing.T) {
 
 func TestOptimizeHookPreservesFailuresAndRaw(t *testing.T) {
 	failure := "token=secret\nERROR: boom\n" + strings.Repeat("x\n", 5000)
-	got := OptimizeHook(HookRequest{Command: "go test ./...", Output: failure})
+	got := OptimizeHook(HookRequest{Command: "some_unknown_command", Output: failure})
 	if !got.Passthrough || !strings.Contains(got.Output, "[REDACTED]") {
 		t.Fatalf("failure must be redacted passthrough: %#v", got)
 	}

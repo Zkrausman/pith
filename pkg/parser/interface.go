@@ -44,6 +44,7 @@ func GetAllParsers() []Parser {
 		&CompositeGitParser{},
 		&GitStatusParser{},
 		&GitLogParser{},
+		&GitShowParser{},
 		&GitDiffParser{},
 		&GitBranchParser{},
 		// FS
@@ -58,8 +59,8 @@ func GetAllParsers() []Parser {
 		// Infra
 		&EnvParser{},
 		&DockerPsParser{},
-		&GitHubParser{},
 		&GitHubReleaseParser{},
+		&GitHubParser{},
 		&DependencyParser{},
 		&TestParser{},
 		&GoToolCoverParser{},
@@ -74,6 +75,7 @@ func GetAllParsers() []Parser {
 		&PromptfooParser{},
 		&ThneedParser{},
 		&SnagParser{},
+		&NodeParser{},
 		&NPMParser{},
 	}
 	return append(parsers, &ChainParser{})

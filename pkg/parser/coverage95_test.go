@@ -349,20 +349,20 @@ func TestGitHubParser_AllBranches(t *testing.T) {
 		t.Error("Expected gh release list to match")
 	}
 
-	// CanParse invalid
-	if p.CanParse("gh", []string{"auth", "login"}) {
-		t.Error("Expected gh auth to NOT match")
+	// CanParse is now generic
+	if !p.CanParse("gh", []string{"auth", "login"}) {
+		t.Error("Expected gh auth to match")
 	}
 
-	// Truncation (>25 entries)
+	// Truncation (>100 entries)
 	var sb strings.Builder
 	sb.WriteString("TITLE  DESCRIPTION  STATUS\n")
-	for i := 0; i < 30; i++ {
-		sb.WriteString("123  Some Title  OPEN\n")
+	for i := 0; i < 110; i++ {
+		sb.WriteString("123  Title  Open\n")
 	}
 	output := p.Parse(sb.String())
-	if !strings.Contains(output, "truncated") {
-		t.Errorf("Expected truncation, got %s", output)
+	if !strings.Contains(output, "truncated gh output") {
+		t.Error("Expected gh list to be truncated")
 	}
 
 	// Single field line (no | formatting)
