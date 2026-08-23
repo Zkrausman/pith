@@ -342,16 +342,16 @@ func TestGitHubParser_AllBranches(t *testing.T) {
 	if !p.CanParse("gh", []string{"issue", "list"}) {
 		t.Error("Expected gh issue list to match")
 	}
-	if !p.CanParse("gh", []string{"pr", "view"}) {
-		t.Error("Expected gh pr view to match")
-	}
 	if !p.CanParse("gh", []string{"release", "list"}) {
 		t.Error("Expected gh release list to match")
 	}
 
-	// CanParse is now generic
-	if !p.CanParse("gh", []string{"auth", "login"}) {
-		t.Error("Expected gh auth to match")
+	// CanParse invalid (generic views should passthrough so generic compression can head/tail them)
+	if p.CanParse("gh", []string{"pr", "view"}) {
+		t.Error("Expected gh pr view to NOT match")
+	}
+	if p.CanParse("gh", []string{"auth", "login"}) {
+		t.Error("Expected gh auth to NOT match")
 	}
 
 	// Truncation (>100 entries)

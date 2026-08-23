@@ -15,22 +15,22 @@ func (n *NodeParser) CanParse(cmd string, args []string) bool {
 
 func (n *NodeParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
-	var result []string
-
+	// Node output often contains stack traces or JSON where indentation is important.
+	// We preserve empty lines and indentation but bound the size.
+	// Stack traces often have the most critical info at the top (error message) and bottom (where it failed).
+	var final []string
 	for _, line := range lines {
-		// Node output often contains stack traces or JSON where indentation is important.
-		// We preserve empty lines and indentation but bound the size.
-		result = append(result, line)
-
-		// Hard cutoff for node outputs to prevent massive json or array dumps
-		if len(result) > 100 {
-			break
-		}
+		final = append(final, line)
 	}
 
-	res := strings.Join(result, "\n")
-	if len(lines) > 100 {
-		res += fmt.Sprintf("\n... (+ %d more lines truncated by Pith)", len(lines)-100)
+	if len(final) > 100 {
+		head := final[:30]
+		tail := final[len(final)-70:]
+		res := strings.Join(head, "\n")
+		res += fmt.Sprintf("\n\n... (+ %d more lines truncated by Pith) ...\n\n", len(final)-100)
+		res += strings.Join(tail, "\n")
+		return res
 	}
-	return res
+
+	return strings.Join(final, "\n")
 }

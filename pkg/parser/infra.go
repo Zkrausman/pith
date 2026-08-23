@@ -233,7 +233,14 @@ type GitHubParser struct{}
 
 func (g *GitHubParser) Name() string { return "github" }
 func (g *GitHubParser) CanParse(cmd string, args []string) bool {
-	return MatchCommand(cmd, "gh")
+	if !MatchCommand(cmd, "gh") {
+		return false
+	}
+	joined := strings.Join(args, " ")
+	return strings.Contains(joined, " list") || 
+	       strings.Contains(joined, " search") || 
+	       strings.Contains(joined, " checks") || 
+	       strings.Contains(joined, " status")
 }
 func (g *GitHubParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -247,8 +254,10 @@ func (g *GitHubParser) Parse(output string) string {
 			continue
 		}
 
-		// Skip header lines if present
-		if strings.HasPrefix(trimmed, "Showing ") || strings.HasPrefix(trimmed, "NAME") || strings.HasPrefix(trimmed, "TITLE") {
+		// Strictly skip actual table headers, not paragraph text
+		if (strings.HasPrefix(trimmed, "Showing ") && strings.Contains(trimmed, "results")) || 
+		   strings.HasPrefix(trimmed, "TITLE \t") || strings.HasPrefix(trimmed, "TITLE  ") ||
+		   strings.HasPrefix(trimmed, "NAME \t") || strings.HasPrefix(trimmed, "NAME  ") {
 			continue
 		}
 

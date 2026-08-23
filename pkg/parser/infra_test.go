@@ -113,9 +113,6 @@ Zkrausman/resume       public  2026-01-01T12:00:00Z
 	if !p.CanParse("gh", []string{"issue", "list"}) {
 		t.Error("GitHubParser should handle gh issue list")
 	}
-	if !p.CanParse("gh", []string{"run", "view"}) {
-		t.Error("GitHubParser should handle gh run view")
-	}
 
 	output := p.Parse(input)
 	if !strings.Contains(output, "Zkrausman/Pith         private 2026-03-16T06:01:28Z") {

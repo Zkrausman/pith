@@ -7,10 +7,12 @@ import (
 
 func getGitSubcommand(args []string) string {
 	for i := 0; i < len(args); i++ {
-		if !strings.HasPrefix(args[i], "-") {
-			return args[i]
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			return arg
 		}
-		if args[i] == "-C" || args[i] == "-c" || args[i] == "--git-dir" || args[i] == "--work-tree" {
+		// These global flags consume the next argument
+		if arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--super-prefix" {
 			i++
 		}
 	}
@@ -270,10 +272,11 @@ func (c *CompositeGitParser) Parse(output string) string {
 	}
 
 	// Post-processing to remove duplicates that might occur from the multi-parser approach
+	// Do not deduplicate diff changes (+ or -) or hunk markers.
 	var final []string
 	seen := make(map[string]bool)
 	for _, l := range result {
-		if !seen[l] || l == "@@" { // Allow multiple hunk markers
+		if strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") || l == "@@" || !seen[l] {
 			final = append(final, l)
 			seen[l] = true
 		}
