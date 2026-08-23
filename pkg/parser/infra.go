@@ -228,14 +228,45 @@ func (g *GoToolCoverParser) Parse(output string) string {
 	return strings.Join(result, "\n")
 }
 
-// GitHubParser (NEW)
+// GitHubParser (UPDATED)
 type GitHubParser struct{}
 
 func (g *GitHubParser) Name() string { return "github" }
 func (g *GitHubParser) CanParse(cmd string, args []string) bool {
-	return MatchCommand(cmd, "gh") && len(args) > 0 &&
-		(args[0] == "issue" || args[0] == "pr" || args[0] == "release" || args[0] == "repo" || args[0] == "run") &&
-		(strings.Contains(strings.Join(args, " "), " list") || strings.Contains(strings.Join(args, " "), " view"))
+	if !MatchCommand(cmd, "gh") {
+		return false
+	}
+	known := map[string]bool{
+		"pr": true, "issue": true, "repo": true, "run": true,
+		"search": true, "status": true, "list": true, "checks": true,
+		"create": true, "view": true, "edit": true, "close": true,
+		"extension": true, "org": true, "project": true, "release": true,
+		"gist": true, "ruleset": true, "api": true, "auth": true,
+		"config": true, "label": true, "alias": true,
+	}
+	var cmds []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			// Skip values for known global flags that take arguments
+			if arg == "-R" || arg == "--repo" || arg == "--jq" || arg == "-q" || arg == "--limit" || arg == "-L" {
+				i++
+			}
+			continue
+		}
+		if known[arg] {
+			cmds = append(cmds, arg)
+		}
+	}
+	for i, c := range cmds {
+		if i > 1 {
+			break
+		}
+		if c == "list" || c == "search" || c == "checks" || c == "status" {
+			return true
+		}
+	}
+	return false
 }
 func (g *GitHubParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -243,40 +274,23 @@ func (g *GitHubParser) Parse(output string) string {
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+
+		// Skip spinner/progress lines
+		if strings.Contains(trimmed, "Resolving deltas") || strings.Contains(trimmed, "remote: Compressing") {
 			continue
 		}
 
-		// Skip header lines if present
-		if strings.HasPrefix(trimmed, "Showing ") || strings.HasPrefix(trimmed, "NAME") || strings.HasPrefix(trimmed, "TITLE") {
+		// Strictly skip actual table headers, not paragraph text
+		if (strings.HasPrefix(trimmed, "Showing ") && strings.Contains(trimmed, "results")) || 
+		   strings.HasPrefix(trimmed, "TITLE \t") || strings.HasPrefix(trimmed, "TITLE  ") ||
+		   strings.HasPrefix(trimmed, "NAME \t") || strings.HasPrefix(trimmed, "NAME  ") {
 			continue
 		}
 
-		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 {
-			// For issues/PRs/repos: ID/NAME  TITLE/DESCRIPTION  STATUS/DATE
-			id := fields[0]
-			title := fields[1]
+		result = append(result, line)
 
-			status := ""
-			if len(fields) >= 3 {
-				status = fields[2]
-				if len(status) > 15 {
-					status = status[:15]
-				}
-			}
-
-			if status != "" {
-				result = append(result, fmt.Sprintf("%s | %s | %s", id, title, status))
-			} else {
-				result = append(result, fmt.Sprintf("%s | %s", id, title))
-			}
-		} else {
-			result = append(result, trimmed)
-		}
-
-		if len(result) > 25 {
-			result = append(result, "... (truncated gh list)")
+		if len(result) > 100 {
+			result = append(result, "... (truncated gh output)")
 			break
 		}
 	}

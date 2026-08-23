@@ -2,8 +2,25 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func getGitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			return arg
+		}
+		// These global flags consume the next argument
+		if arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--super-prefix" || arg == "--config-env" || arg == "--attr-source" {
+			i++
+		}
+	}
+	return ""
+}
 
 // GitStatusParser (Existing)
 type GitStatusParser struct{}
@@ -13,7 +30,7 @@ func (g *GitStatusParser) CanParse(cmd string, args []string) bool {
 	if cmd != "git" || len(args) == 0 {
 		return false
 	}
-	sub := args[0]
+	sub := getGitSubcommand(args)
 	return sub == "status" || sub == "add" || sub == "commit" || sub == "push"
 }
 func (g *GitStatusParser) Parse(output string) string {
@@ -49,7 +66,7 @@ type GitLogParser struct{}
 
 func (g *GitLogParser) Name() string { return "git_log" }
 func (g *GitLogParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && len(args) > 0 && args[0] == "log"
+	return cmd == "git" && getGitSubcommand(args) == "log"
 }
 func (g *GitLogParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -93,33 +110,32 @@ type GitDiffParser struct{}
 
 func (g *GitDiffParser) Name() string { return "git_diff" }
 func (g *GitDiffParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && len(args) > 0 && args[0] == "diff"
+	return cmd == "git" && getGitSubcommand(args) == "diff"
 }
 func (g *GitDiffParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
 	var result []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
+		cleanLine := ansiRegex.ReplaceAllString(line, "")
+		if strings.HasPrefix(cleanLine, "index ") || strings.HasPrefix(cleanLine, "diff --git") {
 			continue
 		}
 		// Condense hunk headers: @@ -1,4 +1,4 @@ -> @@
-		if strings.HasPrefix(line, "@@") {
+		if strings.HasPrefix(cleanLine, "@@") {
 			result = append(result, "@@")
 			continue
 		}
 		// Simplify file markers
-		if strings.HasPrefix(line, "--- a/") {
-			result = append(result, "--- "+strings.TrimPrefix(line, "--- a/"))
+		if strings.HasPrefix(cleanLine, "--- a/") {
+			result = append(result, "--- "+strings.TrimPrefix(cleanLine, "--- a/"))
 			continue
 		}
-		if strings.HasPrefix(line, "+++ b/") {
-			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
+		if strings.HasPrefix(cleanLine, "+++ b/") {
+			result = append(result, "+++ "+strings.TrimPrefix(cleanLine, "+++ b/"))
 			continue
 		}
-		// Only keep changes and minimal context if needed, but here we keep all changed lines
-		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
-			result = append(result, line)
-		}
+		// Pass through everything else to preserve EOF markers, renames, and file modes
+		result = append(result, cleanLine)
 	}
 	return strings.Join(result, "\n")
 }
@@ -129,7 +145,7 @@ type GitBranchParser struct{}
 
 func (g *GitBranchParser) Name() string { return "git_branch" }
 func (g *GitBranchParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && len(args) > 0 && args[0] == "branch"
+	return cmd == "git" && getGitSubcommand(args) == "branch"
 }
 func (g *GitBranchParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
@@ -166,23 +182,82 @@ func (c *CompositeGitParser) CanParse(cmd string, args []string) bool {
 	return strings.Contains(cmd, "git ") && (strings.Contains(cmd, ";") || strings.Contains(cmd, "&"))
 }
 func (c *CompositeGitParser) Parse(output string) string {
-	// A more effective approach for composite git output:
-	// 1. Split into lines
-	// 2. Filter out known git noise (headers, use-instructions, etc.)
-	// 3. For logs, condense the commit headers
-	// 4. For diffs, keep only +/- lines and @@ markers
-
 	lines := strings.Split(output, "\n")
 	var result []string
 
-	// Track state for log condensation within composite output
 	var currentCommit, currentAuthor, currentDate, currentSubject string
 
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+	flushCommit := func() {
+		if currentCommit != "" {
+			result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
+			currentCommit = ""
+		}
+	}
 
-		// Skip standard status/branch noise
-		if trimmed == "" || strings.HasPrefix(trimmed, "(use ") ||
+	inCommitBlock := false
+
+	for _, line := range lines {
+		cleanLine := ansiRegex.ReplaceAllString(line, "")
+		trimmed := strings.TrimSpace(cleanLine)
+
+		if strings.HasPrefix(cleanLine, "commit ") {
+			if inCommitBlock {
+				flushCommit()
+			}
+			inCommitBlock = true
+			currentCommit = strings.TrimPrefix(cleanLine, "commit ")
+			if len(currentCommit) > 7 {
+				currentCommit = currentCommit[:7]
+			}
+			currentAuthor, currentDate, currentSubject = "", "", ""
+			continue
+		}
+		
+		if inCommitBlock {
+			if strings.HasPrefix(cleanLine, "Author: ") {
+				currentAuthor = strings.TrimPrefix(cleanLine, "Author: ")
+				if idx := strings.Index(currentAuthor, " <"); idx != -1 {
+					currentAuthor = currentAuthor[:idx]
+				}
+				continue
+			} else if strings.HasPrefix(cleanLine, "Date: ") {
+				currentDate = strings.TrimPrefix(cleanLine, "Date: ")
+				fields := strings.Fields(currentDate)
+				if len(fields) >= 3 {
+					currentDate = fields[1] + " " + fields[2] + " " + fields[4]
+				}
+				continue
+			} else if strings.HasPrefix(cleanLine, "Merge: ") || strings.HasPrefix(cleanLine, "gpg: ") || strings.HasPrefix(cleanLine, "Primary key ") || strings.HasPrefix(cleanLine, "Good \"git\" signature") {
+				continue
+			} else if cleanLine == "" || strings.HasPrefix(cleanLine, "    ") {
+				if currentSubject == "" && currentCommit != "" && trimmed != "" {
+					currentSubject = trimmed
+				}
+				continue
+			}
+			// If it's none of the above, it's the end of the commit block (stats or diff)
+			flushCommit()
+			inCommitBlock = false
+		}
+
+		if strings.HasPrefix(cleanLine, "index ") || strings.HasPrefix(cleanLine, "diff --git") {
+			continue
+		}
+		if strings.HasPrefix(cleanLine, "@@") {
+			result = append(result, "@@")
+			continue
+		}
+		if strings.HasPrefix(cleanLine, "--- a/") {
+			result = append(result, "--- "+strings.TrimPrefix(cleanLine, "--- a/"))
+			continue
+		}
+		if strings.HasPrefix(cleanLine, "+++ b/") {
+			result = append(result, "+++ "+strings.TrimPrefix(cleanLine, "+++ b/"))
+			continue
+		}
+
+		// Noise filtering for git status elements
+		if strings.HasPrefix(trimmed, "(use ") ||
 			strings.HasPrefix(trimmed, "On branch") || strings.HasPrefix(trimmed, "Your branch") ||
 			strings.Contains(trimmed, "nothing to commit") || strings.Contains(trimmed, "no changes added") ||
 			strings.HasPrefix(trimmed, "Changes not staged") || strings.HasPrefix(trimmed, "Changes to be committed") ||
@@ -190,82 +265,28 @@ func (c *CompositeGitParser) Parse(output string) string {
 			continue
 		}
 
-		// Handle diff noise
-		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
-			continue
-		}
-		if strings.HasPrefix(line, "@@") {
-			result = append(result, "@@")
-			continue
-		}
-		if strings.HasPrefix(line, "--- a/") {
-			result = append(result, "--- "+strings.TrimPrefix(line, "--- a/"))
-			continue
-		}
-		if strings.HasPrefix(line, "+++ b/") {
-			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
-			continue
-		}
-
-		// Log processing
-		if strings.HasPrefix(line, "commit ") {
-			if currentCommit != "" {
-				result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-			}
-			currentCommit = strings.TrimPrefix(line, "commit ")
-			if len(currentCommit) > 7 {
-				currentCommit = currentCommit[:7]
-			}
-			currentAuthor, currentDate, currentSubject = "", "", ""
-			continue
-		} else if strings.HasPrefix(line, "Author: ") {
-			currentAuthor = strings.TrimPrefix(line, "Author: ")
-			if idx := strings.Index(currentAuthor, " <"); idx != -1 {
-				currentAuthor = currentAuthor[:idx]
-			}
-			continue
-		} else if strings.HasPrefix(line, "Date: ") {
-			currentDate = strings.TrimPrefix(line, "Date: ")
-			fields := strings.Fields(currentDate)
-			if len(fields) >= 3 {
-				currentDate = fields[1] + " " + fields[2] + " " + fields[4]
-			}
-			continue
-		} else if strings.HasPrefix(line, "    ") && currentSubject == "" && currentCommit != "" {
-			currentSubject = strings.TrimSpace(line)
-			continue
-		}
-
-		// If we finished a log entry and moved on to something else (status/diff lines)
-		if currentCommit != "" && !strings.HasPrefix(line, "    ") {
-			result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-			currentCommit = ""
-		}
-
-		// Keep diff changes
-		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
-			result = append(result, line)
-			continue
-		}
-
-		// Default to keeping the line (like status file names)
-		result = append(result, trimmed)
+		// Pass through all remaining lines (including metadata, empty lines, and diff chunks)
+		result = append(result, cleanLine)
 	}
 
-	// Final flush if log was at the end
-	if currentCommit != "" {
-		result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-	}
+	flushCommit()
+	return strings.Join(result, "\n")
+}
 
-	// Post-processing to remove duplicates that might occur from the multi-parser approach
-	var final []string
-	seen := make(map[string]bool)
-	for _, l := range result {
-		if !seen[l] || l == "@@" { // Allow multiple hunk markers
-			final = append(final, l)
-			seen[l] = true
-		}
-	}
+// GitShowParser (NEW)
+type GitShowParser struct{
+	comp *CompositeGitParser
+}
 
-	return strings.Join(final, "\n")
+func (g *GitShowParser) Name() string { return "git_show" }
+func (g *GitShowParser) CanParse(cmd string, args []string) bool {
+	return cmd == "git" && getGitSubcommand(args) == "show"
+}
+func (g *GitShowParser) Parse(output string) string {
+	if g.comp == nil {
+		g.comp = &CompositeGitParser{}
+	}
+	// Git show output looks just like a composite of git log and git diff!
+	// We can safely pass it through CompositeGitParser.
+	return g.comp.Parse(output)
 }

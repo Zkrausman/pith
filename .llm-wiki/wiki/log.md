@@ -4,3 +4,6 @@
 
 - **observe**: {"relevance":"high","slug":"obs-2026-08-11-pith-wiki-and-pr-policy-branch-opened","title":"Pith wiki and PR policy branch opened"}
 - **bootstrap**: {"mode":"company","topic":"Pith"}
+- **obs**: {"relevance":"high","slug":"obs-2026-08-22-pith-parser-opportunities-implemented","title":"Implemented new parsers for gh, npm ci, git show, and node"}
+- **obs**: {"relevance":"high","slug":"obs-2026-08-22-pith-parser-fixes","title":"Fixed data destruction bugs in gh and git parsers based on adversarial review"}
+- **obs**: {"relevance":"high","slug":"obs-2026-08-22-pith-parser-fixes-v2","title":"Refined deduplication, memory safety, and flag parsing based on second adversarial review"}

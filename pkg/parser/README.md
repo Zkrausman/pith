@@ -5,15 +5,19 @@ This package contains all specialized optimizers (parsers) that compress termina
 ```mermaid
 graph TD
     Interface["Parser Interface [pkg/parser/interface.go]"]
-    Git["GitParser [pkg/parser/git.go]"]
+    Git["GitParsers [pkg/parser/git.go]"]
     Thneed["ThneedParser [pkg/parser/thneed.go]"]
     NPM["NPMParser [pkg/parser/npm.go]"]
+    Node["NodeParser [pkg/parser/node.go]"]
     FS["FS/LS Parser [pkg/parser/fs.go]"]
+    GitHub["GitHubParser [pkg/parser/infra.go]"]
     
     Interface <|-- Git
     Interface <|-- Thneed
     Interface <|-- NPM
+    Interface <|-- Node
     Interface <|-- FS
+    Interface <|-- GitHub
 ```
 
 
