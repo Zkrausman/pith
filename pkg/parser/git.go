@@ -271,18 +271,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 		result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
 	}
 
-	// Post-processing to remove duplicates that might occur from the multi-parser approach
-	// Do not deduplicate diff changes (+ or -) or hunk markers.
-	var final []string
-	seen := make(map[string]bool)
-	for _, l := range result {
-		if strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") || l == "@@" || !seen[l] {
-			final = append(final, l)
-			seen[l] = true
-		}
-	}
-
-	return strings.Join(final, "\n")
+	return strings.Join(result, "\n")
 }
 
 // GitShowParser (NEW)

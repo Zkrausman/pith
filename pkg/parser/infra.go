@@ -236,11 +236,18 @@ func (g *GitHubParser) CanParse(cmd string, args []string) bool {
 	if !MatchCommand(cmd, "gh") {
 		return false
 	}
-	joined := strings.Join(args, " ")
-	return strings.Contains(joined, " list") || 
-	       strings.Contains(joined, " search") || 
-	       strings.Contains(joined, " checks") || 
-	       strings.Contains(joined, " status")
+	// Check the first few arguments for known noisy commands
+	checkLimit := len(args)
+	if checkLimit > 3 {
+		checkLimit = 3
+	}
+	for i := 0; i < checkLimit; i++ {
+		arg := args[i]
+		if arg == "list" || arg == "search" || arg == "checks" || arg == "status" {
+			return true
+		}
+	}
+	return false
 }
 func (g *GitHubParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
