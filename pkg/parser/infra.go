@@ -237,6 +237,9 @@ func (g *GitHubParser) CanParse(cmd string, args []string) bool {
 		return false
 	}
 	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
 		if arg == "list" || arg == "search" || arg == "checks" || arg == "status" {
 			return true
 		}

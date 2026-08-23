@@ -130,8 +130,8 @@ func (g *GitDiffParser) Parse(output string) string {
 			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
 			continue
 		}
-		// Only keep changes and minimal context if needed, but here we keep all changed lines
-		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+		// Only keep changes and context lines. We explicitly preserve empty lines and spaced lines.
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ") || line == "" {
 			result = append(result, line)
 		}
 	}
@@ -180,8 +180,7 @@ func (c *CompositeGitParser) CanParse(cmd string, args []string) bool {
 	return strings.Contains(cmd, "git ") && (strings.Contains(cmd, ";") || strings.Contains(cmd, "&"))
 }
 func (c *CompositeGitParser) Parse(output string) string {
-	lines := strings.Split(output, "
-")
+	lines := strings.Split(output, "\n")
 	var result []string
 
 	var currentCommit, currentAuthor, currentDate, currentSubject string
@@ -204,6 +203,8 @@ func (c *CompositeGitParser) Parse(output string) string {
 			}
 			currentAuthor, currentDate, currentSubject = "", "", ""
 			continue
+		} else if strings.HasPrefix(line, "Merge: ") {
+			continue // Skip merge headers so they don't trigger premature flush
 		} else if strings.HasPrefix(line, "Author: ") {
 			currentAuthor = strings.TrimPrefix(line, "Author: ")
 			if idx := strings.Index(currentAuthor, " <"); idx != -1 {
@@ -217,12 +218,15 @@ func (c *CompositeGitParser) Parse(output string) string {
 				currentDate = fields[1] + " " + fields[2] + " " + fields[4]
 			}
 			continue
+		} else if line == "" && currentCommit != "" && currentSubject == "" {
+			// Skip the blank line right after Date: but before the subject
+			continue
 		} else if strings.HasPrefix(line, "    ") && currentSubject == "" && currentCommit != "" {
 			currentSubject = trimmed
 			continue
 		}
 
-		if currentCommit != "" && !strings.HasPrefix(line, "    ") {
+		if currentCommit != "" && line != "" && !strings.HasPrefix(line, "    ") {
 			flushCommit()
 		}
 
@@ -264,8 +268,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 	}
 
 	flushCommit()
-	return strings.Join(result, "
-")
+	return strings.Join(result, "\n")
 }
 
 // GitShowParser (NEW)
