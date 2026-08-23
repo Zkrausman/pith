@@ -2,8 +2,11 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func getGitSubcommand(args []string) string {
 	for i := 0; i < len(args); i++ {
@@ -113,21 +116,22 @@ func (g *GitDiffParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
 	var result []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
+		cleanLine := ansiRegex.ReplaceAllString(line, "")
+		if strings.HasPrefix(cleanLine, "index ") || strings.HasPrefix(cleanLine, "diff --git") {
 			continue
 		}
 		// Condense hunk headers: @@ -1,4 +1,4 @@ -> @@
-		if strings.HasPrefix(line, "@@") {
+		if strings.HasPrefix(cleanLine, "@@") {
 			result = append(result, "@@")
 			continue
 		}
 		// Simplify file markers
-		if strings.HasPrefix(line, "--- a/") {
-			result = append(result, "--- "+strings.TrimPrefix(line, "--- a/"))
+		if strings.HasPrefix(cleanLine, "--- a/") {
+			result = append(result, "--- "+strings.TrimPrefix(cleanLine, "--- a/"))
 			continue
 		}
-		if strings.HasPrefix(line, "+++ b/") {
-			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
+		if strings.HasPrefix(cleanLine, "+++ b/") {
+			result = append(result, "+++ "+strings.TrimPrefix(cleanLine, "+++ b/"))
 			continue
 		}
 		// Pass through everything else to preserve EOF markers, renames, and file modes
@@ -193,14 +197,15 @@ func (c *CompositeGitParser) Parse(output string) string {
 	inCommitBlock := false
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		cleanLine := ansiRegex.ReplaceAllString(line, "")
+		trimmed := strings.TrimSpace(cleanLine)
 
-		if strings.HasPrefix(line, "commit ") {
+		if strings.HasPrefix(cleanLine, "commit ") {
 			if inCommitBlock {
 				flushCommit()
 			}
 			inCommitBlock = true
-			currentCommit = strings.TrimPrefix(line, "commit ")
+			currentCommit = strings.TrimPrefix(cleanLine, "commit ")
 			if len(currentCommit) > 7 {
 				currentCommit = currentCommit[:7]
 			}
@@ -209,43 +214,45 @@ func (c *CompositeGitParser) Parse(output string) string {
 		}
 		
 		if inCommitBlock {
-			if strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "--- a/") {
-				flushCommit()
-				inCommitBlock = false
-				// fallthrough to diff parsing
-			} else {
-				if strings.HasPrefix(line, "Author: ") {
-					currentAuthor = strings.TrimPrefix(line, "Author: ")
-					if idx := strings.Index(currentAuthor, " <"); idx != -1 {
-						currentAuthor = currentAuthor[:idx]
-					}
-				} else if strings.HasPrefix(line, "Date: ") {
-					currentDate = strings.TrimPrefix(line, "Date: ")
-					fields := strings.Fields(currentDate)
-					if len(fields) >= 3 {
-						currentDate = fields[1] + " " + fields[2] + " " + fields[4]
-					}
-				} else if strings.HasPrefix(line, "    ") && currentSubject == "" && currentCommit != "" {
+			if strings.HasPrefix(cleanLine, "Author: ") {
+				currentAuthor = strings.TrimPrefix(cleanLine, "Author: ")
+				if idx := strings.Index(currentAuthor, " <"); idx != -1 {
+					currentAuthor = currentAuthor[:idx]
+				}
+				continue
+			} else if strings.HasPrefix(cleanLine, "Date: ") {
+				currentDate = strings.TrimPrefix(cleanLine, "Date: ")
+				fields := strings.Fields(currentDate)
+				if len(fields) >= 3 {
+					currentDate = fields[1] + " " + fields[2] + " " + fields[4]
+				}
+				continue
+			} else if strings.HasPrefix(cleanLine, "Merge: ") || strings.HasPrefix(cleanLine, "gpg: ") || strings.HasPrefix(cleanLine, "Primary key ") {
+				continue
+			} else if cleanLine == "" || strings.HasPrefix(cleanLine, "    ") {
+				if currentSubject == "" && currentCommit != "" && trimmed != "" {
 					currentSubject = trimmed
 				}
-				// Ignore everything else in the commit block (GPG, Merge, extra body lines, blank lines)
 				continue
 			}
+			// If it's none of the above, it's the end of the commit block (stats or diff)
+			flushCommit()
+			inCommitBlock = false
 		}
 
-		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
+		if strings.HasPrefix(cleanLine, "index ") || strings.HasPrefix(cleanLine, "diff --git") {
 			continue
 		}
-		if strings.HasPrefix(line, "@@") {
+		if strings.HasPrefix(cleanLine, "@@") {
 			result = append(result, "@@")
 			continue
 		}
-		if strings.HasPrefix(line, "--- a/") {
-			result = append(result, "--- "+strings.TrimPrefix(line, "--- a/"))
+		if strings.HasPrefix(cleanLine, "--- a/") {
+			result = append(result, "--- "+strings.TrimPrefix(cleanLine, "--- a/"))
 			continue
 		}
-		if strings.HasPrefix(line, "+++ b/") {
-			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
+		if strings.HasPrefix(cleanLine, "+++ b/") {
+			result = append(result, "+++ "+strings.TrimPrefix(cleanLine, "+++ b/"))
 			continue
 		}
 

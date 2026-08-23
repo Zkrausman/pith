@@ -236,21 +236,25 @@ func (g *GitHubParser) CanParse(cmd string, args []string) bool {
 	if !MatchCommand(cmd, "gh") {
 		return false
 	}
-	var pos []string
-	for i := 0; i < len(args); i++ {
-		if strings.HasPrefix(args[i], "-") {
-			if args[i] == "-R" || args[i] == "--repo" {
-				i++
-			}
-			continue
-		}
-		pos = append(pos, args[i])
-		if len(pos) >= 2 {
-			break
+	known := map[string]bool{
+		"pr": true, "issue": true, "repo": true, "run": true,
+		"search": true, "status": true, "list": true, "checks": true,
+		"create": true, "view": true, "edit": true, "close": true,
+		"extension": true, "org": true, "project": true, "release": true,
+		"gist": true, "ruleset": true, "api": true, "auth": true,
+		"config": true, "label": true, "alias": true,
+	}
+	var cmds []string
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") && known[arg] {
+			cmds = append(cmds, arg)
 		}
 	}
-	for _, p := range pos {
-		if p == "list" || p == "search" || p == "checks" || p == "status" {
+	for i, c := range cmds {
+		if i > 1 {
+			break
+		}
+		if c == "list" || c == "search" || c == "checks" || c == "status" {
 			return true
 		}
 	}
