@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-08-23
+### Added
+- **GitHub CLI (`gh`) Parser**: Compresses `gh pr list`, `gh issue search`, and other subcommands into lightweight markdown tables, drastically reducing JSON bloat from GitHub's raw output.
+- **Node & NPM Parsers**: Safely truncates massive `npm install` and Node stack traces, preserving the critical head (error summary) and tail (stack execution) while stripping thousands of lines of intermediate download noise.
+- **Git Show Integration**: `GitShowParser` added to explicitly compress `git show` outputs using the same algorithms as `git diff` and `git log`.
+
+### Fixed
+- **Git Parser Integrity**: Completely overhauled the `CompositeGitParser` state machine. It now flawlessly handles SSH signatures, GPG blocks, and `git log --stat` summaries without destroying commit context.
+- **Git Diff Passthrough**: Abandoned naive diff whitelists in favor of blacklist passthrough. `Pith` now explicitly preserves `\ No newline at end of file`, file mode changes, renames, and all other extended git metadata while stripping ANSI color codes safely.
+- **GitHub Parser Flag Tolerance**: Hardened `gh` parser positional logic to safely bypass global flags and values (e.g., `-R`, `--jq`), preventing false negatives on complex GitHub CLI queries.
+
 ## [2.3.2] - 2026-08-18
 ### Added
 - **Antigravity Model Attribution:** `hook-pretool` now extracts `modelName` from the Antigravity hook payload and forwards `--model` to the Pith runner.
