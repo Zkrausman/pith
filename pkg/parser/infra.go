@@ -241,9 +241,6 @@ func (g *GitHubParser) Parse(output string) string {
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
 
 		// Skip spinner/progress lines
 		if strings.Contains(trimmed, "Resolving deltas") || strings.Contains(trimmed, "remote: Compressing") {
@@ -255,7 +252,7 @@ func (g *GitHubParser) Parse(output string) string {
 			continue
 		}
 
-		result = append(result, trimmed)
+		result = append(result, line)
 
 		if len(result) > 100 {
 			result = append(result, "... (truncated gh output)")

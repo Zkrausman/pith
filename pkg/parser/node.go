@@ -18,14 +18,9 @@ func (n *NodeParser) Parse(output string) string {
 	var result []string
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		
-		// Typically, Node stack traces or large logs can be massive.
-		// We just bound the output size here to be safe.
-		result = append(result, trimmed)
+		// Node output often contains stack traces or JSON where indentation is important.
+		// We preserve empty lines and indentation but bound the size.
+		result = append(result, line)
 
 		// Hard cutoff for node outputs to prevent massive json or array dumps
 		if len(result) > 100 {
