@@ -236,11 +236,21 @@ func (g *GitHubParser) CanParse(cmd string, args []string) bool {
 	if !MatchCommand(cmd, "gh") {
 		return false
 	}
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			if args[i] == "-R" || args[i] == "--repo" {
+				i++
+			}
+			continue
+		}
+		pos = append(pos, args[i])
+		if len(pos) >= 2 {
 			break
 		}
-		if arg == "list" || arg == "search" || arg == "checks" || arg == "status" {
+	}
+	for _, p := range pos {
+		if p == "list" || p == "search" || p == "checks" || p == "status" {
 			return true
 		}
 	}

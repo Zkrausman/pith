@@ -130,10 +130,8 @@ func (g *GitDiffParser) Parse(output string) string {
 			result = append(result, "+++ "+strings.TrimPrefix(line, "+++ b/"))
 			continue
 		}
-		// Only keep changes and context lines. We explicitly preserve empty lines and spaced lines.
-		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ") || line == "" {
-			result = append(result, line)
-		}
+		// Pass through everything else to preserve EOF markers, renames, and file modes
+		result = append(result, line)
 	}
 	return strings.Join(result, "\n")
 }
@@ -192,42 +190,47 @@ func (c *CompositeGitParser) Parse(output string) string {
 		}
 	}
 
+	inCommitBlock := false
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		if strings.HasPrefix(line, "commit ") {
-			flushCommit()
+			if inCommitBlock {
+				flushCommit()
+			}
+			inCommitBlock = true
 			currentCommit = strings.TrimPrefix(line, "commit ")
 			if len(currentCommit) > 7 {
 				currentCommit = currentCommit[:7]
 			}
 			currentAuthor, currentDate, currentSubject = "", "", ""
 			continue
-		} else if strings.HasPrefix(line, "Merge: ") {
-			continue // Skip merge headers so they don't trigger premature flush
-		} else if strings.HasPrefix(line, "Author: ") {
-			currentAuthor = strings.TrimPrefix(line, "Author: ")
-			if idx := strings.Index(currentAuthor, " <"); idx != -1 {
-				currentAuthor = currentAuthor[:idx]
-			}
-			continue
-		} else if strings.HasPrefix(line, "Date: ") {
-			currentDate = strings.TrimPrefix(line, "Date: ")
-			fields := strings.Fields(currentDate)
-			if len(fields) >= 3 {
-				currentDate = fields[1] + " " + fields[2] + " " + fields[4]
-			}
-			continue
-		} else if line == "" && currentCommit != "" && currentSubject == "" {
-			// Skip the blank line right after Date: but before the subject
-			continue
-		} else if strings.HasPrefix(line, "    ") && currentSubject == "" && currentCommit != "" {
-			currentSubject = trimmed
-			continue
 		}
-
-		if currentCommit != "" && line != "" && !strings.HasPrefix(line, "    ") {
-			flushCommit()
+		
+		if inCommitBlock {
+			if strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "--- a/") {
+				flushCommit()
+				inCommitBlock = false
+				// fallthrough to diff parsing
+			} else {
+				if strings.HasPrefix(line, "Author: ") {
+					currentAuthor = strings.TrimPrefix(line, "Author: ")
+					if idx := strings.Index(currentAuthor, " <"); idx != -1 {
+						currentAuthor = currentAuthor[:idx]
+					}
+				} else if strings.HasPrefix(line, "Date: ") {
+					currentDate = strings.TrimPrefix(line, "Date: ")
+					fields := strings.Fields(currentDate)
+					if len(fields) >= 3 {
+						currentDate = fields[1] + " " + fields[2] + " " + fields[4]
+					}
+				} else if strings.HasPrefix(line, "    ") && currentSubject == "" && currentCommit != "" {
+					currentSubject = trimmed
+				}
+				// Ignore everything else in the commit block (GPG, Merge, extra body lines, blank lines)
+				continue
+			}
 		}
 
 		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "diff --git") {
@@ -246,16 +249,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 			continue
 		}
 
-		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ") {
-			result = append(result, line)
-			continue
-		}
-		
-		if line == "" {
-			result = append(result, line)
-			continue
-		}
-
+		// Noise filtering for git status elements
 		if strings.HasPrefix(trimmed, "(use ") ||
 			strings.HasPrefix(trimmed, "On branch") || strings.HasPrefix(trimmed, "Your branch") ||
 			strings.Contains(trimmed, "nothing to commit") || strings.Contains(trimmed, "no changes added") ||
@@ -264,6 +258,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 			continue
 		}
 
+		// Pass through all remaining lines (including metadata, empty lines, and diff chunks)
 		result = append(result, line)
 	}
 
