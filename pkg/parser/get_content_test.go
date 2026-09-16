@@ -40,7 +40,7 @@ func TestGetContentParser(t *testing.T) {
 	if len(largeJsonOutput) > 2100 {
 		t.Errorf("Expected large JSON to be truncated, got length %d", len(largeJsonOutput))
 	}
-	if !strings.HasSuffix(largeJsonOutput, "... (truncated JSON)") {
+	if !strings.Contains(largeJsonOutput, "minimized by Pith") {
 		t.Errorf("Expected truncation suffix for large JSON")
 	}
 
@@ -52,7 +52,7 @@ func TestGetContentParser(t *testing.T) {
 	if len(lines) > 52 {
 		t.Errorf("Expected plain text to be truncated to ~50 lines, got %d", len(lines))
 	}
-	if !strings.Contains(textOutput, "truncated by Pith") {
+	if !strings.Contains(textOutput, "minimized by Pith") {
 		t.Errorf("Expected truncation message for long text")
 	}
 }

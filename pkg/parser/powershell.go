@@ -119,7 +119,7 @@ func (gc *GetContentParser) Parse(output string) string {
 		// But for token optimization, sometimes raw string manipulation is faster/cheaper.
 
 		if len(result) > 2000 {
-			return result[:2000] + "... (truncated JSON)"
+			return result[:2000] + fmt.Sprintf("... [%d bytes minimized by Pith]", len(result)-2000)
 		}
 		return result
 	}
@@ -127,7 +127,7 @@ func (gc *GetContentParser) Parse(output string) string {
 	// For non-JSON output, just limit lines
 	lines := strings.Split(trimmed, "\n")
 	if len(lines) > 50 {
-		return strings.Join(lines[:50], "\n") + fmt.Sprintf("\n... (+ %d more lines truncated by Pith)", len(lines)-50)
+		return strings.Join(lines[:50], "\n") + fmt.Sprintf("\n... [%d lines minimized by Pith]", len(lines)-50)
 	}
 
 	return trimmed

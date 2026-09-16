@@ -23,7 +23,7 @@ func (n *NodeParser) Parse(output string) string {
 		head := lines[:30]
 		tail := lines[len(lines)-70:]
 		res := strings.Join(head, "\n")
-		res += fmt.Sprintf("\n\n... (+ %d more lines truncated by Pith) ...\n\n", len(lines)-100)
+		res += fmt.Sprintf("\n\n... [%d lines minimized by Pith] ...\n\n", len(lines)-100)
 		res += strings.Join(tail, "\n")
 		return res
 	}

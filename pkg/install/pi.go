@@ -69,7 +69,15 @@ export default function (pi: ExtensionAPI) {
       const inputCostPerMillion = typeof model?.cost?.input === "number" && Number.isFinite(model.cost.input) && model.cost.input >= 0 ? model.cost.input : undefined;
       const response = await transform(binary, { command, output, exitCode, telemetryEnabled: true, model: provider && modelID !== "unknown" ? provider + "/" + modelID : modelID, inputCostPerMillion }, ctx.signal);
       if (typeof response?.output !== "string") return;
-      return { content: [{ type: "text", text: response.output }], details: { ...event.details, pith: { parser: response.parser, passthrough: response.passthrough } } };
+      return { content: [{ type: "text", text: response.output }], details: { ...event.details, pith: {
+        parser: response.parser, passthrough: response.passthrough,
+        originalLineCount: response.originalLineCount, retainedLineCount: response.retainedLineCount,
+        originalByteCount: response.originalByteCount, retainedByteCount: response.retainedByteCount,
+        omittedLineCount: response.omittedLineCount, omittedByteCount: response.omittedByteCount,
+        parserNetReductionKnown: response.parserNetReductionKnown,
+        parserNetLineReduction: response.parserNetLineReduction, parserNetByteReduction: response.parserNetByteReduction,
+        minimizationStrategy: response.minimizationStrategy, upstreamTruncated: response.upstreamTruncated
+      } } };
     } catch { return; } // Pith failure always preserves Pi's original result.
   });
 }

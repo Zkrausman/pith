@@ -72,12 +72,23 @@ var errorMarkerRegex = regexp.MustCompile(`(?i)\[FAIL\]|FAILED|ERROR|panic|trace
 
 var diffMarkerRegex = regexp.MustCompile(`(?m)^(?:diff --git|@@ |--- |\+\+\+ )`)
 
+// upstreamTruncationRegex recognizes omission markers already present in a
+// host/tool result. Such results must remain untouched: Pith did not omit it.
+var upstreamTruncationRegex = regexp.MustCompile(`(?i)(output|content|results?)\s+(was\s+)?(truncated|trimmed)|truncated\s+by\s+(the\s+)?(host|tool|runner)|\.\.\.\s*output\s+truncated|\.\.\.\s*\(truncated|\[showing\s+(lines|last)\b[^\]]*full output\s*:`)
+var warningMarkerRegex = regexp.MustCompile(`(?im)^\s*(warning|warn(ing)?\s*:|npm\s+warn\b|\[[^\]]*\bwarn(?:ing)?\b[^\]]*\]|\d{4}-\d\d-\d\d[^\n]*(warning|warn)|⚠)`)
+var finalSummaryRegex = regexp.MustCompile(`(?im)\b(?:test files?|tests?|suites?)\b[^\n]*\b(?:passed|failed|pass|fail)\b|\b(?:passed|failed)\b[^\n]*\b(?:tests?|suites?)\b|^\s*(?:PASS|FAIL)\b`)
+var gitInspectionRegex = regexp.MustCompile(`(?i)\bgit\b.*\b(status\b[^\n]*--porcelain|worktree\s+list\b[^\n]*--porcelain|rev-parse\b)`)
+
+func mustPreserveOutput(command, output string, exitCode int) bool {
+	return exitCode != 0 || errorMarkerRegex.MatchString(output) || warningMarkerRegex.MatchString(output) || finalSummaryRegex.MatchString(output) || upstreamTruncationRegex.MatchString(output) || gitInspectionRegex.MatchString(command) || isStructuredOutput(output)
+}
+
 // secretPatterns redacts common credential shapes before persistence/compression.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(api[_-]?key\s*[:=]\s*)(["']?)[^"'\s;]+(["']?)`),
-	regexp.MustCompile(`(?i)(secret\s*[:=]\s*)(["']?)[^"'\s;]+(["']?)`),
-	regexp.MustCompile(`(?i)(password\s*[:=]\s*)(["']?)[^\s"']+(["']?)`),
-	regexp.MustCompile(`(?i)(token\s*[:=]\s*)(["']?)[^\s"']+(["']?)`),
+	regexp.MustCompile(`(?i)(api[_-]?key\s*["']?\s*[:=]\s*)(["']?)[^"'\s;]+(["']?)`),
+	regexp.MustCompile(`(?i)(secret\s*["']?\s*[:=]\s*)(["']?)[^"'\s;]+(["']?)`),
+	regexp.MustCompile(`(?i)(password\s*["']?\s*[:=]\s*)(["']?)[^\s"']+(["']?)`),
+	regexp.MustCompile(`(?i)(token\s*["']?\s*[:=]\s*)(["']?)[^\s"']+(["']?)`),
 	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.]+`),
 	regexp.MustCompile(`(?i)ghp_[A-Za-z0-9_]+`),
 	regexp.MustCompile(`(?i)gho_[A-Za-z0-9_]+`),
@@ -106,10 +117,11 @@ func PiOptimizeWithConfig(command, output string, exitCode int, cfg PiConfig) (s
 	if output == "" {
 		return "", nil
 	}
+	// Preserve omissions made upstream and exact inspection/machine-readable
+	// commands; Pith must not claim or introduce loss for these results.
+	preserve := mustPreserveOutput(strings.TrimSpace(command), output, exitCode)
 	var compressed string
-	if exitCode != 0 {
-		compressed = maybeRedact(output, cfg)
-	} else if errorMarkerRegex.MatchString(output) {
+	if preserve {
 		compressed = maybeRedact(output, cfg)
 	} else if diffMarkerRegex.MatchString(output) {
 		compressed = maybeRedact(output, cfg)
@@ -164,14 +176,17 @@ func maybeRedact(s string, cfg PiConfig) string {
 
 func redactSecrets(s string) string {
 	out := s
-	for _, re := range secretPatterns {
-		if strings.Contains(re.String(), "(") && strings.Contains(re.String(), "[") {
-			out = re.ReplaceAllString(out, `${1}[REDACTED]`)
+	for i, re := range secretPatterns {
+		// The first four expressions capture the key prefix and optional
+		// surrounding quote characters. Keep those captures: consuming a
+		// closing quote while replacing a JSON scalar otherwise produces
+		// malformed JSON (for example, "token:abc").
+		if i < 4 {
+			out = re.ReplaceAllString(out, `${1}${2}[REDACTED]${3}`)
 		} else {
 			out = re.ReplaceAllString(out, "[REDACTED]")
 		}
 	}
-	out = regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.]+`).ReplaceAllString(out, "Bearer [REDACTED]")
 	return out
 }
 
@@ -191,9 +206,22 @@ func compressLargeOutput(output string, threshold int) string {
 		if keep < 200 {
 			keep = 200
 		}
-		prefix := output[:keep/2]
-		suffix := output[len(output)-keep/2:]
-		return prefix + "\n... [middle truncated by Pith PiOptimize]\n" + suffix
+		runes := []rune(output)
+		half := keep / 2
+		if half*2 > len(runes) {
+			half = len(runes) / 2
+		}
+		prefix, suffix := string(runes[:half]), string(runes[len(runes)-half:])
+		omitted := output[len(prefix) : len(output)-len(suffix)]
+		omittedLines := lineCount(output) - lineCount(prefix) - lineCount(suffix)
+		if omittedLines < 0 {
+			omittedLines = 0
+		}
+		candidate := prefix + fmt.Sprintf("\n... [%d bytes, %d lines minimized by Pith PiOptimize] ...\n", len(omitted), omittedLines) + suffix
+		if len(candidate) >= len(output) {
+			return output
+		}
+		return candidate
 	}
 
 	middleStart := head
@@ -209,29 +237,63 @@ func compressLargeOutput(output string, threshold int) string {
 			}
 		}
 	}
-	result := make([]string, 0, head+tail+10)
-	result = append(result, lines[:head]...)
+	keep := make([]bool, len(lines))
+	for i := 0; i < head; i++ {
+		keep[i] = true
+	}
+	for i := len(lines) - tail; i < len(lines); i++ {
+		keep[i] = true
+	}
 	keptHot := 0
 	for i := middleStart; i < middleEnd && keptHot < 10; i++ {
-		if hotSet[i] {
-			start := i - 1
-			if start < middleStart {
-				start = middleStart
+		if !hotSet[i] {
+			continue
+		}
+		start, end := i-1, i+1
+		if start < middleStart {
+			start = middleStart
+		}
+		if end >= middleEnd {
+			end = middleEnd - 1
+		}
+		for j := start; j <= end; j++ {
+			if !keep[j] {
+				keep[j] = true
 			}
-			end := i + 1
-			if end >= middleEnd {
-				end = middleEnd - 1
-			}
-			for j := start; j <= end; j++ {
-				result = append(result, lines[j])
-			}
-			keptHot++
+		}
+		keptHot++
+	}
+	var kept, omitted []string
+	for i, line := range lines {
+		if keep[i] {
+			kept = append(kept, line)
+		} else {
+			omitted = append(omitted, line)
 		}
 	}
-	removed := (middleEnd - middleStart) - (len(result) - head)
-	if removed > 0 {
-		result = append(result, fmt.Sprintf("... [%d lines removed by Pith PiOptimize] ...", removed))
+	if len(omitted) == 0 {
+		return output
+	}
+	omittedBytes := 0
+	for i, line := range lines {
+		if !keep[i] {
+			omittedBytes += len(line)
+			if i < len(lines)-1 {
+				omittedBytes++ // account for the source newline, including empty lines
+			}
+		}
+	}
+	marker := fmt.Sprintf("... [%d bytes, %d lines minimized by Pith PiOptimize] ...", omittedBytes, len(omitted))
+	result := append(append([]string{}, lines[:head]...), marker)
+	for i := head; i < len(lines)-tail; i++ {
+		if keep[i] {
+			result = append(result, lines[i])
+		}
 	}
 	result = append(result, lines[len(lines)-tail:]...)
-	return strings.Join(result, "\n")
+	candidate := strings.Join(result, "\n")
+	if len(candidate) >= len(output) {
+		return output
+	}
+	return candidate
 }
