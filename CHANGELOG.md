@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.4.2] - Unreleased
+## [2.4.3] - 2026-09-16
+### Fixed
+- Preserve unsupported Git log formats and ambiguous mixed-command output rather than applying destructive single-command parsing.
+- Prevent Pi grep grouping from expanding the redacted context representation.
+- Remove unreachable dashboard telemetry code while preserving disabled endpoint behavior.
+
+### Documentation
+- Require SemVer version bumps and changelog entries for shipped-code changes.
+
+## [2.4.2] - 2026-09-16
 ### Fixed
 - Scope the Windows DuckDB emutls compatibility shim to GCC 16, avoiding duplicate symbols with GCC 15's runtime.
 - Validate native Windows linking in pull-request CI, before release tagging.
