@@ -117,6 +117,12 @@ func OptimizeHook(req HookRequest) HookResponse {
 				if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
 					rawParsed := candidate.Parse(req.Output)
 					parsed := maybeRedact(rawParsed, cfg)
+					// Grep grouping is useful only when it shrinks the redacted
+					// representation. On rejection retain passthrough provenance.
+					if candidate.Name() == "grep" && (len(parsed) > len(result.Output) ||
+						runner.EstimateTokensWithHeuristic(parsed, 4) >= runner.EstimateTokensWithHeuristic(result.Output, 4)) {
+						break
+					}
 					result = responseMetadata(req.Output, parsed, "parser:"+candidate.Name(), false)
 					result.Parser = candidate.Name()
 					if lines, bytes, known := parserReduction(req.Output, rawParsed); known {
