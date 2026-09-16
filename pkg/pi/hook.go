@@ -13,7 +13,8 @@ import (
 )
 
 // HookRequest is the JSON stdin contract for `pith pi transform`. Pith only
-// transforms completed output and never executes Command.
+// transforms completed output and never executes Command. The CLI defaults omitted
+// telemetryEnabled to true; Go callers must set TelemetryEnabled to opt in.
 type HookRequest struct {
 	Command             string          `json:"command"`
 	Output              string          `json:"output"`
@@ -139,6 +140,9 @@ func OptimizeHook(req HookRequest) HookResponse {
 				}
 			}
 		}
+	}
+	if !req.TelemetryEnabled {
+		return result
 	}
 	if tel, err := telemetry.NewTelemetry(req.StoragePath); err == nil {
 		defer tel.Close()
