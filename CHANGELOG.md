@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - Unreleased
+### Fixed
+- Scope the Windows DuckDB emutls compatibility shim to GCC 16, avoiding duplicate symbols with GCC 15's runtime.
+- Validate native Windows linking in pull-request CI, before release tagging.
+- Include the Pi minimization provenance and correctness-sensitive output preservation fixes from the unpublished v2.4.1 build.
+
+### Release notes
+- v2.4.1 was tagged but not published because its Windows build failed. Its tag is retained unchanged; v2.4.2 supersedes that failed release attempt.
+
 ## [2.4.0] - 2026-08-23
 ### Added
 - **GitHub CLI (`gh`) Parser**: Compresses `gh pr list`, `gh issue search`, and other subcommands into lightweight markdown tables, drastically reducing JSON bloat from GitHub's raw output.

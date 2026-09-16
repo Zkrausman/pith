@@ -8,3 +8,4 @@
 - [Pith local upgrade to merged AIDEV-153](pith-local-upgrade-merged-aidev-153.md)
 - [Pith provenance count semantics](pith-provenance-count-semantics.md)
 - [Pith v2.4.1 release gate](pith-v241-release-gate.md)
+- [Windows GCC emutls release failure](pith-windows-gcc-emutls-release-failure.md)
