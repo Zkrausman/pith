@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -77,7 +76,7 @@ func TestLoadConfigWithLegacyFallback(t *testing.T) {
 	}
 }
 
-func TestLoadConfigWithLegacyFallbackMatchesMigratedConfig(t *testing.T) {
+func TestLoadConfigWithLegacyFallbackPreservesSelectedStorage(t *testing.T) {
 	home, storage := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -86,8 +85,7 @@ func TestLoadConfigWithLegacyFallbackMatchesMigratedConfig(t *testing.T) {
 	if err := os.MkdirAll(legacy, 0700); err != nil {
 		t.Fatal(err)
 	}
-	// An explicit storage_path keeps its normal precedence, even when read
-	// from legacy config; migration's selected destination remains separate.
+	// Fallback settings must not redirect the explicitly selected destination.
 	data := []byte(`{"enabled_parsers":{"node":false},"storage_path":"fixture-override","max_lines":123}`)
 	if err := os.WriteFile(filepath.Join(legacy, "config.json"), data, 0600); err != nil {
 		t.Fatal(err)
@@ -96,7 +94,7 @@ func TestLoadConfigWithLegacyFallbackMatchesMigratedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.StoragePath != "fixture-override" || before.MaxLines != 123 || before.USDPerMillionTokens != 3 || before.TokenHeuristic != 4 {
+	if before.StoragePath != storage || before.MaxLines != 123 || before.USDPerMillionTokens != 3 || before.TokenHeuristic != 4 {
 		t.Fatalf("legacy values/defaults not preserved: %#v", before)
 	}
 	// Copy only synthetic config to compare against the existing loader. No DB.
@@ -104,7 +102,7 @@ func TestLoadConfigWithLegacyFallbackMatchesMigratedConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, err := LoadConfig()
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("fallback differs from migrated config: before=%#v after=%#v err=%v", before, after, err)
+	if err != nil || after.StoragePath != "fixture-override" || after.MaxLines != before.MaxLines {
+		t.Fatalf("selected config storage override not honored: before=%#v after=%#v err=%v", before, after, err)
 	}
 }

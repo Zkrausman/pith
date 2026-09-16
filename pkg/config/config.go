@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 type Config struct {
@@ -50,10 +49,9 @@ func LoadConfig() (*Config, error) {
 	return loadConfig(false)
 }
 
-// LoadConfigWithLegacyFallback resolves the config migration would supply without
-// writing storage. Existing selected configs remain authoritative, and read errors
-// fail closed rather than silently enabling parsers disabled by legacy settings.
-// Pi transform uses this before deciding whether consent permits migration.
+// LoadConfigWithLegacyFallback reads legacy settings when the selected config is
+// missing, without changing the selected storage or writing files. Read errors
+// fail closed rather than enabling parsers disabled by legacy settings.
 func LoadConfigWithLegacyFallback() (*Config, error) {
 	return loadConfig(true)
 }
@@ -72,18 +70,8 @@ func loadConfig(legacyFallback bool) (*Config, error) {
 		StoragePath:    filepath.Dir(path),
 	}
 
-	// If we are using the old default, but newDefault is the intended new default,
-	// we should set StoragePath to the new default to trigger migration.
-	newDefault := filepath.Join(TheBrainBase, "TheBrain", "PithBackup")
-	if env := os.Getenv("PITH_STORAGE"); env != "" {
-		cfg.StoragePath = env
-	} else if _, err := os.Stat(filepath.Join(newDefault, "config.json")); err == nil {
-		cfg.StoragePath = newDefault
-	} else if strings.Contains(path, ".pith") {
-		// If we are currently in .pith and newDefault doesn't exist, we WANT to go to newDefault
-		cfg.StoragePath = newDefault
-	}
-
+	selectedStorage := cfg.StoragePath
+	usedLegacy := false
 	data, err := os.ReadFile(path)
 	if legacyFallback && os.IsNotExist(err) {
 		home, homeErr := os.UserHomeDir()
@@ -91,6 +79,7 @@ func loadConfig(legacyFallback bool) (*Config, error) {
 			return nil, homeErr
 		}
 		data, err = os.ReadFile(filepath.Join(home, ".pith", "config.json"))
+		usedLegacy = true
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -99,7 +88,12 @@ func loadConfig(legacyFallback bool) (*Config, error) {
 		return nil, err
 	}
 
-	if err := json.Unmarshal(data, cfg); err != nil {
+	unmarshalErr := json.Unmarshal(data, cfg)
+	if usedLegacy {
+		// Fallback supplies settings, not authority to redirect selected storage.
+		cfg.StoragePath = selectedStorage
+	}
+	if unmarshalErr != nil {
 		return cfg, nil
 	}
 

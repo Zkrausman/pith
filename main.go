@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "v2.4.4"
+const version = "v2.4.5"
 
 type HookInput struct {
 	ToolResponse struct {
@@ -216,14 +216,6 @@ func NewRootCmd() *cobra.Command {
 
 func main() {
 	rootCmd := NewRootCmd()
-	command, _, findErr := rootCmd.Find(os.Args[1:])
-	// Pi transform must decode telemetry consent before touching legacy storage.
-	// Other commands retain their existing startup migration behavior.
-	if findErr != nil || command.CommandPath() != "pith pi transform" {
-		if cfg, err := config.LoadConfig(); err == nil {
-			_ = config.MigrateStorage(cfg.StoragePath)
-		}
-	}
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -292,15 +284,6 @@ func runPiTransform(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigWithLegacyFallback()
 	if err != nil {
 		return err
-	}
-	if input.TelemetryEnabled {
-		// Preserve the pre-migration destination: a legacy config may override
-		// storage_path, but historically that only applied after migration.
-		migrationCfg, err := config.LoadConfig()
-		if err != nil {
-			return err
-		}
-		_ = config.MigrateStorage(migrationCfg.StoragePath)
 	}
 	input.EnabledParsers = cfg.EnabledParsers
 	if input.StoragePath == "" {
