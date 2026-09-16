@@ -19,6 +19,16 @@ Before ending a code-changing session:
 4. Push changes: `git pull --rebase`, `git push`, then verify `git status` is up to date with origin.
 5. Record the handoff and durable insights in the wiki.
 
+## Versioning & Releases
+
+- Use Semantic Versioning (`MAJOR.MINOR.PATCH`). Every PR that changes shipped code must update the binary version in `main.go` and add a matching entry to `CHANGELOG.md` before merge.
+- Use a **patch** bump for backward-compatible fixes, refactors, and performance improvements; a **minor** bump for backward-compatible functionality; a **major** bump for breaking changes to supported behavior or interfaces. Minor bumps reset patch to zero; major bumps reset minor and patch to zero.
+- Documentation-only and test-only changes are exempt. Embedded assets, generated integration code, and build/dependency changes that alter the shipped product are not exempt.
+- Before merge, reconcile the proposed version with current `main` and existing release tags. Parallel PRs must not land conflicting versions; update the later PR's version and changelog after rebasing. Do not assume a version reserved on an unmerged branch is available.
+- Every published release has a new, unique version. Its `vMAJOR.MINOR.PATCH` tag, binary-reported version, and changelog heading must agree. Never move or reuse a release tag, including one whose release workflow failed; use a new version for a corrected release.
+- Merging a version bump does not authorize tagging, publishing, or installing. Publication and local installation remain separate, explicitly authorized actions. Publish only from a human-merged commit after applicable validation succeeds.
+- Include the versioning decision in PR descriptions. These are contributor/reviewer requirements; do not claim automated enforcement unless corresponding CI checks exist and pass.
+
 ## Build & Test
 
 - Binary: `pith.exe`
