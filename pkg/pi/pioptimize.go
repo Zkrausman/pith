@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"pith/pkg/parser"
 	"pith/pkg/telemetry"
 )
 
@@ -80,7 +81,7 @@ var finalSummaryRegex = regexp.MustCompile(`(?im)\b(?:test files?|tests?|suites?
 var gitInspectionRegex = regexp.MustCompile(`(?i)\bgit\b.*\b(status\b[^\n]*--porcelain|worktree\s+list\b[^\n]*--porcelain|rev-parse\b)`)
 
 func mustPreserveOutput(command, output string, exitCode int) bool {
-	return exitCode != 0 || errorMarkerRegex.MatchString(output) || warningMarkerRegex.MatchString(output) || finalSummaryRegex.MatchString(output) || upstreamTruncationRegex.MatchString(output) || gitInspectionRegex.MatchString(command) || isStructuredOutput(output)
+	return parser.MayContainShellSyntax(command) || exitCode != 0 || errorMarkerRegex.MatchString(output) || warningMarkerRegex.MatchString(output) || finalSummaryRegex.MatchString(output) || upstreamTruncationRegex.MatchString(output) || gitInspectionRegex.MatchString(command) || isStructuredOutput(output)
 }
 
 // secretPatterns redacts common credential shapes before persistence/compression.
@@ -119,7 +120,7 @@ func PiOptimizeWithConfig(command, output string, exitCode int, cfg PiConfig) (s
 	}
 	// Preserve omissions made upstream and exact inspection/machine-readable
 	// commands; Pith must not claim or introduce loss for these results.
-	preserve := mustPreserveOutput(strings.TrimSpace(command), output, exitCode)
+	preserve := mustPreserveOutput(command, output, exitCode)
 	var compressed string
 	if preserve {
 		compressed = maybeRedact(output, cfg)

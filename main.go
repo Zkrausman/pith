@@ -535,46 +535,19 @@ func runHook(cmd *cobra.Command, args []string) error {
 	if len(cmdParts) == 0 {
 		return respondAllow(cmd)
 	}
-	parsers := parser.GetAllParsers()
 	var p parser.Parser
-	cmdName := cmdParts[0]
-	pArgs := cmdParts[1:]
-	for _, parser := range parsers {
-		enabled, ok := cfg.EnabledParsers[parser.Name()]
-		if (!ok || enabled) && parser.CanParse(cmdName, pArgs) {
-			p = parser
-			break
-		}
-	}
-	if p == nil && cmdName == "&" && len(cmdParts) > 1 {
-		cmdName = cmdParts[1]
-		pArgs = cmdParts[2:]
-		if strings.HasPrefix(cmdName, "\"") && strings.HasSuffix(cmdName, "\"") {
-			cmdName = strings.Trim(cmdName, "\"")
-		}
-		for _, parser := range parsers {
-			enabled, ok := cfg.EnabledParsers[parser.Name()]
-			if (!ok || enabled) && parser.CanParse(cmdName, pArgs) {
-				p = parser
+	// Quoted invocations and shell syntax are intentionally preserved rather
+	// than normalized into a destructive parser for aggregate output.
+	if !parser.MayContainShellSyntax(command) {
+		for _, candidate := range parser.GetAllParsers() {
+			enabled, configured := cfg.EnabledParsers[candidate.Name()]
+			if (!configured || enabled) && candidate.CanParse(cmdParts[0], cmdParts[1:]) {
+				p = candidate
 				break
 			}
 		}
 	}
-	if p == nil && strings.HasPrefix(command, "\"") {
-		endQuote := strings.Index(command[1:], "\"")
-		if endQuote != -1 {
-			cmdName = command[1 : endQuote+1]
-			remaining := strings.TrimSpace(command[endQuote+2:])
-			pArgs = strings.Fields(remaining)
-			for _, parser := range parsers {
-				enabled, ok := cfg.EnabledParsers[parser.Name()]
-				if (!ok || enabled) && parser.CanParse(cmdName, pArgs) {
-					p = parser
-					break
-				}
-			}
-		}
-	}
+
 	var compressed string
 	parserUsed := "none"
 	isPassthrough := true

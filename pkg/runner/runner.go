@@ -160,6 +160,25 @@ func (r *Runner) LogForSnag(cmdStr string, output string, exitCode int) {
 	_, _ = f.WriteString(entry)
 }
 
+// selectParser never applies a single-command parser to possible aggregate
+// output. The runner's separate middle-out truncation policy is unchanged.
+func (r *Runner) selectParser(command string) parser.Parser {
+	if parser.MayContainShellSyntax(command) {
+		return nil
+	}
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return nil
+	}
+	for _, candidate := range r.parsers {
+		enabled, configured := r.cfg.EnabledParsers[candidate.Name()]
+		if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
+			return candidate
+		}
+	}
+	return nil
+}
+
 func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 	if len(args) == 0 {
 		return fmt.Errorf("no command provided")
@@ -234,54 +253,7 @@ func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 
 	var p parser.Parser
 	if !skipParsing {
-		cmdParts := strings.Fields(fullCmd)
-		var cmdName string
-		var cmdArgs []string
-		if len(cmdParts) > 0 {
-			cmdName = cmdParts[0]
-			cmdArgs = cmdParts[1:]
-		}
-
-		// Special Case: ChainParser
-		if strings.ContainsAny(fullCmd, ";|&><") {
-			cp := &parser.ChainParser{}
-			subcmds := cp.SplitSubCommands(fullCmd)
-			if len(subcmds) > 1 {
-				for _, sub := range subcmds {
-					// Identify the best parser for this sub-command
-					var bestP parser.Parser
-					subParts := strings.Fields(sub)
-					if len(subParts) == 0 {
-						continue
-					}
-					subCmdName := subParts[0]
-					subArgs := subParts[1:]
-
-					for _, pCandidate := range r.parsers {
-						enabled, ok := r.cfg.EnabledParsers[pCandidate.Name()]
-						if (!ok || enabled) && pCandidate.CanParse(subCmdName, subArgs) {
-							bestP = pCandidate
-							break
-						}
-					}
-
-					if bestP != nil {
-						p = cp
-						break
-					}
-				}
-			}
-		}
-
-		if p == nil {
-			for _, parser := range r.parsers {
-				enabled, ok := r.cfg.EnabledParsers[parser.Name()]
-				if (!ok || enabled) && parser.CanParse(cmdName, cmdArgs) {
-					p = parser
-					break
-				}
-			}
-		}
+		p = r.selectParser(fullCmd)
 	}
 
 	var finalOutput string

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -61,44 +62,45 @@ func (g *GitStatusParser) Parse(output string) string {
 	return strings.Join(result, "\n")
 }
 
-// GitLogParser (Existing)
+// GitLogParser compresses only complete, undecorated default-format records
+// with a single message line. Any unrecognized content preserves the entire output.
 type GitLogParser struct{}
+
+var gitLogCommitRegex = regexp.MustCompile(`^commit ([0-9a-f]{40}|[0-9a-f]{64})$`)
+var gitLogAuthorRegex = regexp.MustCompile(`^Author: ([^<>]+) <[^<>]+>$`)
 
 func (g *GitLogParser) Name() string { return "git_log" }
 func (g *GitLogParser) CanParse(cmd string, args []string) bool {
 	return cmd == "git" && getGitSubcommand(args) == "log"
 }
 func (g *GitLogParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 	var result []string
-	var currentCommit, currentAuthor, currentDate, currentSubject string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "commit ") {
-			if currentCommit != "" {
-				result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-			}
-			currentCommit = strings.TrimPrefix(line, "commit ")
-			if len(currentCommit) > 7 {
-				currentCommit = currentCommit[:7]
-			}
-			currentAuthor, currentDate, currentSubject = "", "", ""
-		} else if strings.HasPrefix(line, "Author: ") {
-			currentAuthor = strings.TrimPrefix(line, "Author: ")
-			if idx := strings.Index(currentAuthor, " <"); idx != -1 {
-				currentAuthor = currentAuthor[:idx]
-			}
-		} else if strings.HasPrefix(line, "Date: ") {
-			currentDate = strings.TrimPrefix(line, "Date: ")
-			fields := strings.Fields(currentDate)
-			if len(fields) >= 3 {
-				currentDate = fields[1] + " " + fields[2] + " " + fields[4]
-			}
-		} else if strings.HasPrefix(line, "    ") && currentSubject == "" {
-			currentSubject = strings.TrimSpace(line)
+	for i := 0; i < len(lines); {
+		if len(lines)-i < 5 {
+			return output
 		}
-	}
-	if currentCommit != "" {
-		result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
+		commit := gitLogCommitRegex.FindStringSubmatch(lines[i])
+		author := gitLogAuthorRegex.FindStringSubmatch(lines[i+1])
+		if commit == nil || author == nil || !strings.HasPrefix(lines[i+2], "Date:   ") ||
+			lines[i+3] != "" || !strings.HasPrefix(lines[i+4], "    ") {
+			return output
+		}
+		date, err := time.Parse("Mon Jan _2 15:04:05 2006 -0700", strings.TrimPrefix(lines[i+2], "Date:   "))
+		subject := strings.TrimPrefix(lines[i+4], "    ")
+		if err != nil || subject == "" || strings.TrimSpace(subject) != subject {
+			return output
+		}
+		result = append(result, formatCommit(commit[1][:7], author[1], date.Format("Jan 2 2006"), subject))
+		i += 5
+		if i < len(lines) {
+			// Exactly one blank line separates records; no prefix/suffix or
+			// extra message lines may be silently discarded.
+			if lines[i] != "" || i+1 == len(lines) {
+				return output
+			}
+			i++
+		}
 	}
 	return strings.Join(result, "\n")
 }
@@ -212,7 +214,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 			currentAuthor, currentDate, currentSubject = "", "", ""
 			continue
 		}
-		
+
 		if inCommitBlock {
 			if strings.HasPrefix(cleanLine, "Author: ") {
 				currentAuthor = strings.TrimPrefix(cleanLine, "Author: ")
@@ -274,7 +276,7 @@ func (c *CompositeGitParser) Parse(output string) string {
 }
 
 // GitShowParser (NEW)
-type GitShowParser struct{
+type GitShowParser struct {
 	comp *CompositeGitParser
 }
 

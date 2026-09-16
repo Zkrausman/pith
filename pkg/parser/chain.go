@@ -40,3 +40,10 @@ func (c *ChainParser) SplitSubCommands(fullCmd string) []string {
 	}
 	return subcmds
 }
+
+// MayContainShellSyntax is a conservative dispatch veto, not a shell lexer.
+// Quoted literals also veto parsing: aggregate output has no trustworthy
+// per-command boundaries. Never split or reconstruct commands to bypass it.
+func MayContainShellSyntax(command string) bool {
+	return strings.ContainsAny(command, ";|&\r\n`$()<>{}\"'")
+}

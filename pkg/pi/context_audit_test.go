@@ -8,21 +8,20 @@ import (
 	"pith/pkg/runner"
 )
 
-// These chain fixtures characterize the audit baseline, not desired future
-// behavior. Every hook call uses an isolated database: OptimizeHook records
-// even when TelemetryEnabled is false.
-func TestContextAuditChainDispatchCharacterization(t *testing.T) {
+// AIDEV-272 exposed Git-leading mixed-output erasure. AIDEV-273 requires
+// conservative preservation instead. Hook storage remains isolated.
+func TestContextAuditChainDispatchPreservation(t *testing.T) {
 	for _, tc := range []struct {
-		name, command, output, wantParser, wantOutput string
+		name, command, output string
 	}{
-		{"prefix-chain", "cd fixture && git status", "On branch main\n M file.go\n", "chain", "On branch main\n M file.go\n"},
-		{"quoted-operator", "unknown 'a|b'", "ordinary output\n", "chain", "ordinary output\n"},
-		{"leading-parser-consumes-mixed-output", "git log --oneline; echo second", "abc1234 subject\nsecond\n", "git_log", ""},
+		{"prefix-chain", "cd fixture && git status", "On branch main\n M file.go\n"},
+		{"quoted-operator", "unknown 'a|b'", "ordinary output\n"},
+		{"leading-parser-mixed-output", "git log --oneline; echo second", "abc1234 subject\nsecond\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := OptimizeHook(HookRequest{Command: tc.command, Output: tc.output, StoragePath: t.TempDir()})
-			if got.Parser != tc.wantParser || got.Output != tc.wantOutput || got.Passthrough {
-				t.Fatalf("unexpected baseline dispatch: %#v", got)
+			if got.Parser != "" || got.Output != tc.output || !got.Passthrough {
+				t.Fatalf("mixed command must preserve output: %#v", got)
 			}
 		})
 	}
