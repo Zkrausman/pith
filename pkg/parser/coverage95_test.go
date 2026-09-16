@@ -191,7 +191,7 @@ func TestGetContentParser_AllBranches(t *testing.T) {
 	// Large JSON (>2000 chars)
 	largeJSON := `{"key": "` + strings.Repeat("x", 2100) + `"}`
 	output = gc.Parse(largeJSON)
-	if !strings.Contains(output, "truncated JSON") {
+	if !strings.Contains(output, "minimized by Pith") {
 		t.Errorf("Expected truncated JSON message, got %s", output)
 	}
 
@@ -201,7 +201,7 @@ func TestGetContentParser_AllBranches(t *testing.T) {
 		sb.WriteString("line of content\n")
 	}
 	output = gc.Parse(sb.String())
-	if !strings.Contains(output, "truncated by Pith") {
+	if !strings.Contains(output, "minimized by Pith") {
 		t.Errorf("Expected truncation, got %s", output)
 	}
 

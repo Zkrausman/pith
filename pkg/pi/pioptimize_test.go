@@ -1,6 +1,9 @@
 package pi
 
 import (
+	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -61,8 +64,79 @@ func TestPiOptimize_LargeCompression(t *testing.T) {
 	if len(got) >= len(large) {
 		t.Fatalf("large output should be compressed: %d vs %d", len(got), len(large))
 	}
-	if !strings.Contains(got, "removed by Pith PiOptimize") && !strings.Contains(got, "truncated by Pith") {
+	if !strings.Contains(got, "minimized by Pith PiOptimize") {
 		t.Fatalf("compressed should contain marker, got preview %q", got[:200])
+	}
+}
+
+func TestPiOptimize_PreservesRealHostMarkers(t *testing.T) {
+	for _, out := range []string{
+		"head\n[Showing lines 1-20 of 100. Full output: C:/tmp/result.txt]\ntail",
+		"head\n[Showing last 20 lines (100 line limit). Full output: C:/tmp/result.txt]\ntail",
+	} {
+		got, _ := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+		if got != out {
+			t.Fatalf("host marker must remain untouched: %q", got)
+		}
+	}
+}
+
+func TestPiOptimize_PreservesUpstreamTruncationMarker(t *testing.T) {
+	out := "first\n... output truncated by host ...\nlast"
+	got, err := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+	if err != nil || got != out {
+		t.Fatalf("upstream truncation must remain untouched: %q, %v", got, err)
+	}
+}
+
+func TestPiOptimize_PreservesJSONByContent(t *testing.T) {
+	out := `{"items":[` + strings.Repeat(`"value",`, 2000) + `"last"]}`
+	got, _ := PiOptimizeWithConfig("some-command", out, 0, PiConfig{ThresholdBytes: 1})
+	if got != out {
+		t.Fatal("valid JSON must remain lossless")
+	}
+}
+
+func TestPiOptimize_PreservesJSONScalars(t *testing.T) {
+	for _, out := range []string{`true`, `42`, `"a large enough JSON string"`, `null`} {
+		got, _ := PiOptimizeWithConfig("some-command", out, 0, PiConfig{ThresholdBytes: 1})
+		if got != out {
+			t.Fatalf("valid JSON scalar must remain lossless: %q", out)
+		}
+	}
+}
+
+func TestPiOptimize_PreservesWarnings(t *testing.T) {
+	out := "warning: retain this diagnostic\n" + strings.Repeat("detail\n", 2000)
+	got, _ := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+	if got != out {
+		t.Fatal("warning output must remain lossless")
+	}
+}
+
+func TestPiOptimize_PreservesWarningsAndFinalSummaryAfterHotLines(t *testing.T) {
+	lines := make([]string, 0, 520)
+	for i := 0; i < 500; i++ {
+		lines = append(lines, fmt.Sprintf("ordinary detail %03d", i))
+	}
+	lines[101] = "npm WARN deprecated package"
+	lines[121] = "[build warning] retain bracketed diagnostic"
+	lines[141] = "2026-01-02T03:04:05Z warning: timestamped diagnostic"
+	lines = append(lines, "Test Suites: 1 passed, 1 total")
+	out := strings.Join(lines, "\n") + "\n"
+	got, err := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+	if err != nil || got != out {
+		t.Fatalf("warnings and final summary must remain lossless: %v", err)
+	}
+}
+
+func TestPiOptimize_PreservesInspectionCommands(t *testing.T) {
+	out := strings.Repeat("entry\n", 2000)
+	for _, command := range []string{"git status --porcelain", "git worktree list --porcelain", "git rev-parse HEAD"} {
+		got, _ := PiOptimizeWithConfig(command, out, 0, PiConfig{ThresholdBytes: 1})
+		if got != out {
+			t.Fatalf("%q must remain lossless", command)
+		}
 	}
 }
 
@@ -78,6 +152,75 @@ func TestPiOptimize_RawBypass(t *testing.T) {
 }
 
 func rawBypassCheck() bool { return true }
+
+func TestPiOptimize_CompressionMarkerCountsUTF8AndEmptyLines(t *testing.T) {
+	line := strings.Repeat("界", 50)
+	parts := make([]string, 0, 120)
+	for i := 0; i < 120; i++ {
+		parts = append(parts, line)
+	}
+	parts[40], parts[80] = "", ""
+	out := strings.Join(parts, "\n") + "\n"
+	got, err := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+	if err != nil || got == out {
+		t.Fatalf("expected compressed UTF-8 output: %v", err)
+	}
+	marker := regexp.MustCompile(`\.\.\. \[(\d+) bytes, (\d+) lines minimized by Pith PiOptimize\] \.\.\.`).FindStringSubmatch(got)
+	if len(marker) != 3 {
+		t.Fatalf("missing compression marker: %q", got)
+	}
+	bytes, _ := strconv.Atoi(marker[1])
+	lines, _ := strconv.Atoi(marker[2])
+	if bytes <= 0 || lines <= 0 || bytes > len(out) {
+		t.Fatalf("invalid exact omission counts: %q", marker[0])
+	}
+	if marker[1] != "17226" || marker[2] != "116" {
+		t.Fatalf("unexpected UTF-8/empty-line omission math: %q", marker[0])
+	}
+	if !strings.Contains(got, "界") {
+		t.Fatal("UTF-8 retained output was corrupted")
+	}
+}
+
+func TestPiOptimize_TrailingNewlineAndTinyThresholdNeverExpand(t *testing.T) {
+	for _, out := range []string{
+		strings.Repeat("x\n", 120),
+		strings.Repeat("x", 200) + "\n",
+		"first\n\nlast\n",
+	} {
+		got, err := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+		if err != nil || len(got) > len(out) {
+			t.Fatalf("compression must not expand %d-byte output: %v", len(out), err)
+		}
+	}
+}
+
+func TestPiOptimize_HotLineWindowsDoNotDuplicate(t *testing.T) {
+	lines := make([]string, 0, 500)
+	for i := 0; i < 500; i++ {
+		lines = append(lines, fmt.Sprintf("ordinary %03d", i))
+	}
+	lines[100] = "test hot line"
+	lines[101] = "test adjacent hot line"
+	out := strings.Join(lines, "\n")
+	got, _ := PiOptimizeWithConfig("generic-command", out, 0, PiConfig{ThresholdBytes: 1})
+	if got == out {
+		t.Fatal("expected compression")
+	}
+	if strings.Count(got, "test hot line") != 1 || strings.Count(got, "test adjacent hot line") != 1 {
+		t.Fatalf("hot lines duplicated: %q", got)
+	}
+}
+
+func TestPiOptimize_RedactionDoesNotClaimOmission(t *testing.T) {
+	for _, value := range []string{"short", strings.Repeat("long-value-", 100)} {
+		out := "token=" + value + "\n"
+		got := OptimizeHook(HookRequest{Command: "unknown", Output: out, StoragePath: t.TempDir()})
+		if got.OmittedByteCount != 0 || got.OmittedLineCount != 0 {
+			t.Fatalf("redaction is not source omission for %q: %#v", value, got)
+		}
+	}
+}
 
 func TestPiOptimize_Threshold(t *testing.T) {
 	s := strings.Repeat("a\n", 5000)

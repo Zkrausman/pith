@@ -50,6 +50,11 @@ This bypasses all logic and returns the original system output.
 ### 3. Middle-Out Truncation
 When a command returns thousands of lines (like a massive log file), Pith prevents context overflow by keeping the most important parts: the **beginning** (setup/context) and the **end** (errors/results).
 
+### 4. Pi output provenance
+Pi transforms completed tool results only; Pith never reruns the original command. Host markers such as `[Showing lines 1-... of ... Full output: ...]` are preserved and reported as upstream truncation, including any safe host artifact reference. Pith's own omission markers say **minimized** and report omitted volume in the output text. Transform response `original*` and `retained*` fields count input and final rendered bytes/lines (newline-separated segments, including a trailing empty segment). `omitted*` is exact source omission and is zero when source correspondence is unknown (including parser prose or redaction). Parser markers additionally expose `parserNetReductionKnown` and net line/byte reduction, excluding the marker and redaction; these values are not source omission claims. Parser strategies describe rendered output, and only parsers that emit a minimization marker report that net reduction.
+
+Recognized failures, warnings, final test summaries, diffs, valid JSON values (objects, arrays, and scalars), and Git `status --porcelain`, `worktree list --porcelain`, and `rev-parse` output bypass minimization without an additional size cap. This conservative policy also protects bounded results above the normal compression threshold. Redaction is mandatory in the Pi hook and can reduce retained bytes without being minimization. Pith does not retain raw output by default; retrieve lost host output only through the existing host-provided artifact reference when one is present (Pith cannot restore output already lost upstream). Use `pith raw` when exact command output is required.
+
 ### ⚙️ Interactive Configuration (`pith config`)
 Pith features a modern, multi-page TUI built with **Bubble Tea** to manage your optimization engine. Use **`Tab`** to switch between the **Parsers** and **Settings** pages.
 
