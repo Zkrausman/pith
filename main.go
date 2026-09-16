@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "v2.4.3"
+const version = "v2.4.4"
 
 type HookInput struct {
 	ToolResponse struct {
@@ -215,11 +215,15 @@ func NewRootCmd() *cobra.Command {
 }
 
 func main() {
-	cfg, err := config.LoadConfig()
-	if err == nil {
-		_ = config.MigrateStorage(cfg.StoragePath)
-	}
 	rootCmd := NewRootCmd()
+	command, _, findErr := rootCmd.Find(os.Args[1:])
+	// Pi transform must decode telemetry consent before touching legacy storage.
+	// Other commands retain their existing startup migration behavior.
+	if findErr != nil || command.CommandPath() != "pith pi transform" {
+		if cfg, err := config.LoadConfig(); err == nil {
+			_ = config.MigrateStorage(cfg.StoragePath)
+		}
+	}
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -270,7 +274,8 @@ func runRoot(cmd *cobra.Command, args []string) error {
 }
 
 func runPiTransform(cmd *cobra.Command, args []string) error {
-	var input pi.HookRequest
+	// Preserve default-enabled CLI accounting while honoring explicit false.
+	input := pi.HookRequest{TelemetryEnabled: true}
 	decoder := json.NewDecoder(cmd.InOrStdin())
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
@@ -282,9 +287,20 @@ func runPiTransform(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("decode Pi transform request: %w", err)
 	}
-	cfg, err := config.LoadConfig()
+	// Resolve parser settings read-only before consent can affect storage. A
+	// legacy config must protect output even when migration is disabled.
+	cfg, err := config.LoadConfigWithLegacyFallback()
 	if err != nil {
 		return err
+	}
+	if input.TelemetryEnabled {
+		// Preserve the pre-migration destination: a legacy config may override
+		// storage_path, but historically that only applied after migration.
+		migrationCfg, err := config.LoadConfig()
+		if err != nil {
+			return err
+		}
+		_ = config.MigrateStorage(migrationCfg.StoragePath)
 	}
 	input.EnabledParsers = cfg.EnabledParsers
 	if input.StoragePath == "" {

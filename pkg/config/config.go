@@ -47,6 +47,18 @@ func GetConfigPath() (string, error) {
 }
 
 func LoadConfig() (*Config, error) {
+	return loadConfig(false)
+}
+
+// LoadConfigWithLegacyFallback resolves the config migration would supply without
+// writing storage. Existing selected configs remain authoritative, and read errors
+// fail closed rather than silently enabling parsers disabled by legacy settings.
+// Pi transform uses this before deciding whether consent permits migration.
+func LoadConfigWithLegacyFallback() (*Config, error) {
+	return loadConfig(true)
+}
+
+func loadConfig(legacyFallback bool) (*Config, error) {
 	path, err := GetConfigPath()
 	if err != nil {
 		return nil, err
@@ -73,6 +85,13 @@ func LoadConfig() (*Config, error) {
 	}
 
 	data, err := os.ReadFile(path)
+	if legacyFallback && os.IsNotExist(err) {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return nil, homeErr
+		}
+		data, err = os.ReadFile(filepath.Join(home, ".pith", "config.json"))
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.4] - 2026-09-16
+### Fixed
+- Honor explicit Pi hook telemetry opt-out without opening, creating, modifying, or migrating the telemetry database; omitted CLI `telemetryEnabled` remains enabled by default.
+- Resolve unmigrated legacy parser settings read-only for Pi transforms so telemetry consent does not change output preservation; unreadable settings fail before migration or accounting.
+
 ## [2.4.3] - 2026-09-16
 ### Fixed
 - Preserve unsupported Git log formats and ambiguous mixed-command output rather than applying destructive single-command parsing.

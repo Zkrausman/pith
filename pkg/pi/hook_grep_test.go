@@ -67,7 +67,7 @@ func TestOptimizeHookGrepDisabled(t *testing.T) {
 func TestOptimizeHookGrepFallbackTelemetry(t *testing.T) {
 	dir := t.TempDir()
 	input := "a:1:x\nb:2:y\nc:3:z\n"
-	OptimizeHook(HookRequest{Command: "rg pattern fixture", Output: input, StoragePath: dir})
+	OptimizeHook(HookRequest{Command: "rg pattern fixture", Output: input, StoragePath: dir, TelemetryEnabled: true})
 	tel, err := telemetry.NewTelemetry(dir)
 	if err != nil {
 		t.Fatal(err)
