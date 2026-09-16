@@ -2,7 +2,19 @@
 
 Audit snapshot: **2026-09-16 13:59:57 UTC**. Branch `aidev-272-context-audit`; baseline `ffcab2c08d23ff65f427a24057512c9beaddf813`.
 
-The audit below records baseline observations, not a post-change savings claim. The approved follow-up implements only the grep post-redaction non-expansion gate and regression tests. Generic chain compression, Git log correctness, and telemetry consent changes remain out of scope.
+The audit below records historical AIDEV-272 baseline observations, not a post-change savings claim. Its approved follow-up implemented only the grep post-redaction non-expansion gate and regression tests. AIDEV-273 subsequently addresses Git log correctness and conservative mixed-command preservation as described next; generic chain compression and telemetry consent remain out of scope.
+
+## AIDEV-273 — preservation fix
+
+The historical Git-leading mixed-output erasure described below is now a regression to prevent, not desired behavior. `GitLogParser.Parse` compresses only a complete sequence of undecorated default-format records: full SHA-1/SHA-256 commit ID, author, default date, blank line, and one subject line. Every record and separator must be recognized before any compressed result is returned. Unsupported oneline, graph/custom, merge, multiline body, abbreviated/decorated headers, malformed/truncated records, CRLF, extra prefix/suffix, patch/stat, and ambiguous whitespace fall back byte-for-byte. This deliberately sacrifices compression rather than discard unknown content. Supported records retain the existing short-hash/author/date/subject representation; this is not exact-source preservation.
+
+`parser.MayContainShellSyntax` is a conservative character veto, not a shell grammar or proof of command provenance. Separators (`;|&`), CR/LF, quotes, substitutions, grouping, and redirection characters prevent destructive single-command dispatch even when quoted or literal. Ordinary unquoted `git log -2` remains eligible. False positives are intentional; no splitting, reconstruction, or execution is used to infer output boundaries.
+
+The veto is shared by `mustPreserveOutput`, so both `OptimizeHook` and `PiOptimizeWithConfig` preserve possible mixed output (with their existing redaction configuration). Hook fallback always retains mandatory redaction and passthrough metadata; identity Git log results do not claim parser minimization. Existing raw/failure/warning/summary/JSON/diff/upstream/inspection guards and enabled-parser settings remain intact. The standalone Pi API's existing raw-bypass/redaction configuration is unchanged.
+
+Runner parser selection uses the same veto instead of searching split subcommands. The legacy `main.go` `runHook` entrypoint also uses it, intentionally preserving `&` invocations and quoted executables rather than reconstructing them; `main_hook_preservation_test.go` exercises that hook with synthetic stdin and isolated configuration/storage, without executing supplied commands. Its existing allow/deny protocol, output redaction behavior, and independent truncation remain unchanged. **Runner execution and independent middle-out truncation are unchanged**: this is dispatch safety, not a promise that runner output is always lossless. The standalone Pi API still applies its existing large-output policy to ordinary single commands; it does not use GitLogParser. Direct CompositeGitParser/GitShowParser and other parser format correctness are not certified by this fix. Without provenance, output that exactly imitates a supported record cannot be distinguished from one.
+
+Synthetic coverage: `pkg/parser/git_log_test.go` verifies whole-format recognition and exact unsupported fallback; `pkg/pi/hook_git_log_test.go` covers unsupported formats, mixed commands/separators/newlines, intentional quoted-literal preservation, redaction, safety guards, supported compression, and large mixed-output shared Pi preservation. `pkg/runner/parser_dispatch_test.go` tests dispatch without executing supplied commands and explicitly confirms that independent truncation remains. The AIDEV-272 chain characterization now asserts preservation. All new hook calls use temporary storage; AIDEV-274 telemetry consent is not changed. No historical output or real telemetry database was accessed for AIDEV-273.
 
 ## Decision summary
 
@@ -90,7 +102,7 @@ All-history grep is net beneficial despite many expansions. Blanket disabling sa
 
 ## Code inspection and safety constraints
 
-Line references in baseline observations refer to the audited commit; function names identify the stable seams.
+Line references and present-tense code descriptions in the baseline observations below refer to the audited AIDEV-272 commit, not the later AIDEV-273 fix above; function names identify the stable seams.
 
 ### Pi hook
 
@@ -137,7 +149,7 @@ Ranking is by safe next implementation value, not dollar savings or optimistic v
 
 Added `pkg/pi/context_audit_test.go`:
 
-- `TestContextAuditChainDispatchCharacterization`: setup-prefixed chain identity, quoted operator matching, and Git-leading mixed-output erasure. These assertions document today's behavior, including defects; they are not requirements to preserve those defects after a fix.
+- Historically, `TestContextAuditChainDispatchCharacterization` documented setup-prefixed chain identity, quoted operator matching, and Git-leading mixed-output erasure. AIDEV-273 replaces it with `TestContextAuditChainDispatchPreservation`: all three cases require lossless passthrough instead of preserving the defect.
 - `TestContextAuditGrepExpansionFallback`: single-hit-per-file expansion falls back through the hook; direct parser fixtures still demonstrate expansion and beneficial repeated-long-filename grouping.
 - `TestContextAuditHookPreservationBoundaries`: failure, error marker, warning, summary, diff, structured JSON, upstream truncation, raw bypass.
 

@@ -39,13 +39,13 @@ nothing added to commit but untracked files present (use "git add" to track)
 
 func TestGitLogParser(t *testing.T) {
 	p := &GitLogParser{}
-	input := `commit 3f7d7f7b12345678
+	input := `commit 3f7d7f7b12345678000000000000000000000000
 Author: Zachary Krausman <zkrausman@gmail.com>
 Date:   Sun Mar 15 22:49:38 2026 -0400
 
     Update: Display changelog during pith update
 
-commit 1cd63311f8330490
+commit 1cd63311f8330490000000000000000000000000
 Author: Zachary Krausman <zkrausman@gmail.com>
 Date:   Sun Mar 15 22:30:00 2026 -0400
 

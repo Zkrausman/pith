@@ -116,6 +116,10 @@ func OptimizeHook(req HookRequest) HookResponse {
 				enabled, configured := req.EnabledParsers[candidate.Name()]
 				if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
 					rawParsed := candidate.Parse(req.Output)
+					// Unsupported Git log formats retain passthrough provenance.
+					if candidate.Name() == "git_log" && rawParsed == req.Output {
+						break
+					}
 					parsed := maybeRedact(rawParsed, cfg)
 					// Grep grouping is useful only when it shrinks the redacted
 					// representation. On rejection retain passthrough provenance.
