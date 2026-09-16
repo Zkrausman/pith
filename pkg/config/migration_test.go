@@ -1,114 +1,142 @@
 package config
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestMigrateStorage(t *testing.T) {
-	var notices bytes.Buffer
-	previousOutput := migrationOutput
-	migrationOutput = &notices
-	t.Cleanup(func() { migrationOutput = previousOutput })
-
-	// Create a temporary home directory
-	tempHome, err := os.MkdirTemp("", "pith-home-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempHome)
-
-	// Set home directory for testing
-	t.Setenv("USERPROFILE", tempHome) // Windows
-	t.Setenv("HOME", tempHome)        // Unix
-
-	oldPath := filepath.Join(tempHome, ".pith")
-	if err := os.MkdirAll(oldPath, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create some old files
-	dbContent := "fake db"
-	configContent := `{"max_lines": 123}`
-	if err := os.WriteFile(filepath.Join(oldPath, "pith.db"), []byte(dbContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(oldPath, "config.json"), []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Target path
-	targetPath, err := os.MkdirTemp("", "pith-target-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(targetPath)
-
-	// Migrate
-	if err := MigrateStorage(targetPath); err != nil {
-		t.Fatalf("MigrateStorage failed: %v", err)
-	}
-	if !strings.Contains(notices.String(), "Migrating pith.db") || !strings.Contains(notices.String(), "Migrating config.json") {
-		t.Fatalf("expected migration notices on stderr writer, got %q", notices.String())
-	}
-
-	// Verify files in target
-	targetDB := filepath.Join(targetPath, "pith.db")
-	targetConfig := filepath.Join(targetPath, "config.json")
-
-	if data, err := os.ReadFile(targetDB); err != nil || string(data) != dbContent {
-		t.Errorf("DB migration failed: %v, content: %s", err, string(data))
-	}
-	if data, err := os.ReadFile(targetConfig); err != nil || string(data) != configContent {
-		t.Errorf("Config migration failed: %v, content: %s", err, string(data))
-	}
-
-	// Verify old files are renamed to .bak
-	if _, err := os.Stat(filepath.Join(oldPath, "pith.db.bak")); os.IsNotExist(err) {
-		t.Error("Old DB was not renamed to .bak")
-	}
-	if _, err := os.Stat(filepath.Join(oldPath, "config.json.bak")); os.IsNotExist(err) {
-		t.Error("Old Config was not renamed to .bak")
+func TestMigrateStorageNeverMutatesFiles(t *testing.T) {
+	for _, targetKind := range []string{"missing", "existing", "file", "same", "dot", "relative", "case", "symlink"} {
+		t.Run(targetKind, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("PITH_STORAGE", filepath.Join(home, "selected"))
+			legacy := filepath.Join(home, ".pith")
+			if err := os.MkdirAll(legacy, 0700); err != nil {
+				t.Fatal(err)
+			}
+			files := []string{"pith.db", "pith.db-wal", "pith.db-shm", "config.json", "pith.db.bak", "config.json.bak"}
+			before := make(map[string]os.FileInfo)
+			for _, name := range files {
+				path := filepath.Join(legacy, name)
+				if err := os.WriteFile(path, []byte("source-"+name), 0600); err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[name] = info
+			}
+			target := filepath.Join(home, "target")
+			same := false
+			switch targetKind {
+			case "same":
+				target, same = legacy, true
+			case "dot":
+				target, same = legacy+string(os.PathSeparator)+".", true
+			case "relative":
+				t.Chdir(home)
+				target, same = ".pith", true
+			case "case":
+				if runtime.GOOS != "windows" {
+					t.Skip("Windows case alias")
+				}
+				target, same = strings.ToUpper(legacy), true
+			case "symlink":
+				if err := os.Symlink(legacy, target); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+				same = true
+			case "existing":
+				if err := os.Mkdir(target, 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range files {
+					if err := os.WriteFile(filepath.Join(target, name), []byte("destination-"+name), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "file":
+				if err := os.WriteFile(target, []byte("destination"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := MigrateStorage(target)
+			if same && err != nil {
+				t.Fatal(err)
+			}
+			if !same && err == nil {
+				t.Fatal("distinct target must require deliberate migration")
+			}
+			for _, name := range files {
+				path := filepath.Join(legacy, name)
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != "source-"+name {
+					t.Fatalf("source changed: %s %v", name, err)
+				}
+				info, err := os.Stat(path)
+				if err != nil || !info.ModTime().Equal(before[name].ModTime()) {
+					t.Fatalf("source metadata changed: %s %v", name, err)
+				}
+				if targetKind == "existing" {
+					data, err := os.ReadFile(filepath.Join(target, name))
+					if err != nil || string(data) != "destination-"+name {
+						t.Fatalf("destination changed: %s %v", name, err)
+					}
+				}
+			}
+			if targetKind == "missing" {
+				if _, err := os.Stat(target); !os.IsNotExist(err) {
+					t.Fatalf("created target: %v", err)
+				}
+			}
+			if targetKind == "file" {
+				data, err := os.ReadFile(target)
+				if err != nil || string(data) != "destination" {
+					t.Fatalf("target file changed: %v", err)
+				}
+			}
+		})
 	}
 }
 
-func TestMigrateStorage_NoOldPath(t *testing.T) {
-	tempHome, err := os.MkdirTemp("", "pith-home-empty-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempHome)
-
-	t.Setenv("USERPROFILE", tempHome)
-	t.Setenv("HOME", tempHome)
-
-	targetPath, _ := os.MkdirTemp("", "pith-target-*")
-	defer os.RemoveAll(targetPath)
-
-	if err := MigrateStorage(targetPath); err != nil {
-		t.Fatalf("MigrateStorage should not fail when old path doesn't exist: %v", err)
-	}
-}
-
-func TestMigrateStorage_SamePath(t *testing.T) {
-	tempHome, err := os.MkdirTemp("", "pith-home-same-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempHome)
-
-	t.Setenv("USERPROFILE", tempHome)
-	t.Setenv("HOME", tempHome)
-
-	oldPath := filepath.Join(tempHome, ".pith")
-	if err := os.MkdirAll(oldPath, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := MigrateStorage(oldPath); err != nil {
-		t.Fatalf("MigrateStorage should not fail when target is same as old: %v", err)
+func TestMigrateStorageMissingAndErrors(t *testing.T) {
+	for _, kind := range []string{"no-directory", "empty", "legacy-file", "config-directory", "wal-only"} {
+		t.Run(kind, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("PITH_STORAGE", filepath.Join(home, "selected"))
+			legacy, target := filepath.Join(home, ".pith"), filepath.Join(home, "target")
+			if kind == "legacy-file" {
+				if err := os.WriteFile(legacy, []byte("file"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if kind != "no-directory" {
+				if err := os.Mkdir(legacy, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "config-directory" {
+				if err := os.Mkdir(filepath.Join(legacy, "config.json"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "wal-only" {
+				if err := os.WriteFile(filepath.Join(legacy, "pith.db-wal"), []byte("wal"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := MigrateStorage(target)
+			wantError := kind != "no-directory" && kind != "empty"
+			if (err != nil) != wantError {
+				t.Fatalf("error=%v wantError=%v", err, wantError)
+			}
+		})
 	}
 }

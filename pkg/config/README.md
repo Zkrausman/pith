@@ -11,9 +11,13 @@ graph TD
     
     LoadConfig --> ConfigStruct
     ConfigStruct --> Save
-    LoadConfig -.-> Migrate
+
 ```
 
+
+Storage selection does not migrate files. Existing selected config locations and explicit `storage_path` settings remain authoritative; legacy storage stays in place when selected. Pi may read legacy parser settings when the selected config is missing, but that fallback cannot redirect selected storage.
+
+`MigrateStorage` is deprecated and non-mutating: equivalent directory identities or missing legacy files are no-ops; a different destination with legacy files returns an error. Deliberate migration requires a separately planned consistent SQLite backup, not a raw copy of an active database or its WAL.
 
 ## Architecture
 

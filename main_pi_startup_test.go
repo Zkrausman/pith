@@ -3,143 +3,235 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"pith/pkg/config"
 	"pith/pkg/pi"
 	"pith/pkg/telemetry"
 )
 
-// Exercise the shipped entrypoint: NewRootCmd alone skips startup migration.
-func TestMainPiTransformTelemetryConsentBeforeMigration(t *testing.T) {
+func TestMain(m *testing.M) {
+	base, err := os.MkdirTemp("", "pith-main-default-")
+	if err != nil {
+		panic(err)
+	}
+	config.TheBrainBase = base
+	code := m.Run()
+	os.RemoveAll(base)
+	os.Exit(code)
+}
+
+// Exercise the shipped entrypoint with synthetic active WAL storage, not just Cobra.
+func TestMainStorageSafety(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "pith.exe")
-	// Build before changing HOME so default Go cache/module paths are preserved.
-	if out, err := exec.Command("go", "build", "-o", binary, "main.go").CombinedOutput(); err != nil {
+	// Preserve the developer's caches, not their home/storage, for the child build.
+	cacheJSON, err := exec.Command("go", "env", "-json", "GOPATH", "GOMODCACHE", "GOCACHE").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var caches map[string]string
+	if err := json.Unmarshal(cacheJSON, &caches); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range caches {
+		t.Setenv(key, value)
+	}
+	buildHome := t.TempDir()
+	t.Setenv("HOME", buildHome)
+	t.Setenv("USERPROFILE", buildHome)
+	t.Setenv("PITH_STORAGE", t.TempDir())
+	defaultBase := filepath.Join(t.TempDir(), "synthetic default with spaces")
+	if out, err := exec.Command("go", "build", "-ldflags", "-X 'pith/pkg/config.TheBrainBase="+defaultBase+"'", "-o", binary, "main.go").CombinedOutput(); err != nil {
 		t.Fatalf("build entrypoint: %v\n%s", err, out)
 	}
-	input := "token=secret\n" + strings.Repeat("node output\n", 140)
-	redacted := "token=[REDACTED]\n" + strings.Repeat("node output\n", 140)
-	want := pi.HookResponse{
-		Output: redacted, Passthrough: true, MinimizationStrategy: "passthrough",
-		OriginalLineCount: 142, RetainedLineCount: 142,
-		OriginalByteCount: len(input), RetainedByteCount: len(redacted),
-	}
+	// A local rejecting proxy exercises update startup without contacting releases
+	// or downloading/replacing any binary.
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	defer proxy.Close()
 	for _, tc := range []struct {
-		name, field string
-		args        []string
-		migrate     bool
+		name, field                    string
+		args                           []string
+		enabled, configOnly, wantError bool
 	}{
-		{"false", `,"telemetryEnabled":false`, []string{"pi", "transform"}, false},
-		{"false-leading-flag", `,"telemetryEnabled":false`, []string{"--model", "fixture", "pi", "transform"}, false},
-		{"true", `,"telemetryEnabled":true`, []string{"pi", "transform"}, true},
-		{"omitted", "", []string{"pi", "transform"}, true},
-		{"other-command", "", []string{"version"}, true},
+		{name: "false", field: `,"telemetryEnabled":false`, args: []string{"pi", "transform"}},
+		{name: "false-leading-flag", field: `,"telemetryEnabled":false`, args: []string{"--model", "fixture", "pi", "transform"}},
+		{name: "true", field: `,"telemetryEnabled":true`, args: []string{"pi", "transform"}, enabled: true},
+		{name: "omitted", args: []string{"pi", "transform"}, enabled: true},
+		{name: "config-only", args: []string{"pi", "transform"}, enabled: true, configOnly: true},
+		{name: "config-only-false", field: `,"telemetryEnabled":false`, args: []string{"pi", "transform"}, configOnly: true},
+		{name: "version", args: []string{"version"}},
+		{name: "version-flag", args: []string{"--version"}},
+		{name: "help", args: []string{"--help"}},
+		{name: "startup", args: []string{"gain"}, enabled: true},
+		{name: "update", args: []string{"update"}, wantError: true},
+		{name: "config-only-version", args: []string{"version"}, configOnly: true},
+		{name: "config-only-update", args: []string{"update"}, configOnly: true, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			storage := filepath.Join(t.TempDir(), "storage")
+			storage := filepath.Join(t.TempDir(), "selected")
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 			t.Setenv("PITH_STORAGE", storage)
+			t.Setenv("HTTPS_PROXY", proxy.URL)
+			t.Setenv("HTTP_PROXY", proxy.URL)
+			t.Setenv("NO_PROXY", "")
+			if tc.configOnly {
+				t.Setenv("PITH_STORAGE", "")
+			}
 			legacy := filepath.Join(home, ".pith")
 			tel, err := telemetry.NewTelemetry(legacy)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := tel.Record(telemetry.ExecutionRecord{Command: "legacy-fixture"}); err != nil {
-				tel.Close()
+			defer tel.Close()
+			if _, err := tel.DB.Exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;"); err != nil {
 				t.Fatal(err)
 			}
-			tel.Close()
-			configData := []byte(`{"enabled_parsers":{"node":false}}`)
+			if err := tel.Record(telemetry.ExecutionRecord{Command: "legacy-fixture"}); err != nil {
+				t.Fatal(err)
+			}
+			// A fallback storage override must not redirect an environment selection.
+			configStorage := filepath.Join(home, "unselected")
+			if tc.configOnly {
+				configStorage = storage
+			}
+			configData, err := json.Marshal(map[string]any{"enabled_parsers": map[string]bool{"node": false}, "storage_path": configStorage})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(filepath.Join(legacy, "config.json"), configData, 0600); err != nil {
 				t.Fatal(err)
 			}
-			before := make(map[string][]byte)
-			info := make(map[string]os.FileInfo)
-			for _, name := range []string{"pith.db", "config.json"} {
+			for _, name := range []string{"pith.db.bak", "config.json.bak"} {
+				if err := os.WriteFile(filepath.Join(legacy, name), []byte("backup-"+name), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := map[string][]byte{}
+			info := map[string]os.FileInfo{}
+			entries, err := os.ReadDir(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				name := entry.Name()
 				before[name], err = os.ReadFile(filepath.Join(legacy, name))
 				if err != nil {
 					t.Fatal(err)
 				}
-				info[name], err = os.Stat(filepath.Join(legacy, name))
+				info[name], err = entry.Info()
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
-			cmd := exec.Command(binary, tc.args...)
-			encodedOutput, err := json.Marshal(input)
-			if err != nil {
-				t.Fatal(err)
+			if _, ok := before["pith.db-wal"]; !ok {
+				t.Fatal("fixture must have active WAL")
 			}
-			cmd.Stdin = bytes.NewBufferString(`{"command":"node","output":` + string(encodedOutput) + tc.field + `}`)
+			input := "fixture\n" + strings.Repeat("node output\n", 140)
+			encoded, _ := json.Marshal(input)
+			cmd := exec.Command(binary, tc.args...)
+			cmd.Stdin = strings.NewReader(`{"command":"node","output":` + string(encoded) + tc.field + `}`)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			if err := cmd.Run(); err != nil {
-				t.Fatalf("entrypoint: %v\n%s", err, stderr.String())
+			err = cmd.Run()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("entrypoint err=%v stderr=%s", err, stderr.String())
 			}
-			if tc.name != "other-command" {
+			if strings.Contains(stderr.String(), "Migrating") {
+				t.Fatalf("migration notice: %s", stderr.String())
+			}
+			if strings.Contains(strings.Join(tc.args, " "), "pi transform") {
 				var response pi.HookResponse
 				if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-					t.Fatalf("invalid response %q: %v", stdout.String(), err)
+					t.Fatal(err)
 				}
+				want := pi.HookResponse{Output: input, Passthrough: true, MinimizationStrategy: "passthrough", OriginalLineCount: 142, RetainedLineCount: 142, OriginalByteCount: len(input), RetainedByteCount: len(input)}
 				if response != want {
-					t.Fatalf("consent changed full output or provenance: got %#v, want %#v", response, want)
+					t.Fatalf("consent changed output/provenance: %#v", response)
 				}
 			}
-			if !tc.migrate {
+			afterEntries, err := os.ReadDir(legacy)
+			if err != nil || len(afterEntries) != len(entries) {
+				t.Fatalf("legacy entries changed: %v", err)
+			}
+			for name, data := range before {
+				after, err := os.ReadFile(filepath.Join(legacy, name))
+				if err != nil || !bytes.Equal(data, after) {
+					t.Fatalf("legacy %s changed: %v", name, err)
+				}
+				afterInfo, err := os.Stat(filepath.Join(legacy, name))
+				if err != nil || !info[name].ModTime().Equal(afterInfo.ModTime()) {
+					t.Fatalf("legacy %s metadata changed: %v", name, err)
+				}
+			}
+			if !tc.enabled {
 				if _, err := os.Stat(storage); !os.IsNotExist(err) {
-					t.Fatalf("disabled startup created migration target: %v", err)
-				}
-				if stderr.Len() != 0 {
-					t.Fatalf("disabled startup emitted migration notices: %s", stderr.String())
-				}
-				entries, err := os.ReadDir(legacy)
-				if err != nil || len(entries) != 2 {
-					t.Fatalf("legacy directory changed: %v %v", entries, err)
-				}
-				for name, content := range before {
-					path := filepath.Join(legacy, name)
-					after, err := os.ReadFile(path)
-					if err != nil || !bytes.Equal(content, after) {
-						t.Fatalf("legacy %s changed or renamed: %v", name, err)
-					}
-					afterInfo, err := os.Stat(path)
-					if err != nil || !info[name].ModTime().Equal(afterInfo.ModTime()) {
-						t.Fatalf("legacy %s modification time changed: %v", name, err)
-					}
+					t.Fatalf("unexpected target created: %v", err)
 				}
 				return
 			}
-			for name, content := range before {
-				if _, err := os.Stat(filepath.Join(legacy, name)); !os.IsNotExist(err) {
-					t.Fatalf("enabled startup did not rename legacy %s: %v", name, err)
-				}
-				backup, err := os.ReadFile(filepath.Join(legacy, name+".bak"))
-				if err != nil || !bytes.Equal(content, backup) {
-					t.Fatalf("legacy backup %s incorrect: %v", name, err)
-				}
+			if _, err := os.Stat(filepath.Join(storage, "config.json")); !os.IsNotExist(err) {
+				t.Fatalf("legacy config imported: %v", err)
 			}
-			migratedConfig, err := os.ReadFile(filepath.Join(storage, "config.json"))
-			if err != nil || !bytes.Equal(configData, migratedConfig) {
-				t.Fatalf("config not migrated: %v", err)
-			}
-			tel, err = telemetry.NewTelemetry(storage)
+			selected, err := telemetry.NewTelemetry(storage)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tel.Close()
-			records, err := tel.GetRecentExecutions(10, "")
-			wantCount := 2
-			if tc.name == "other-command" {
-				wantCount = 1
+			defer selected.Close()
+			records, err := selected.GetRecentExecutions(10, "")
+			wantCount := 1
+			if tc.name == "startup" {
+				wantCount = 0
 			}
 			if err != nil || len(records) != wantCount {
-				t.Fatalf("legacy records and enabled accounting: %v %#v", err, records)
+				t.Fatalf("selected accounting imported legacy: %#v %v", records, err)
+			}
+			if wantCount == 1 && records[0].Command != "node" {
+				t.Fatalf("wrong record: %#v", records)
 			}
 		})
 	}
+	t.Run("legacy-selected-in-place", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("PITH_STORAGE", "")
+		legacy := filepath.Join(home, ".pith")
+		tel, err := telemetry.NewTelemetry(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tel.Record(telemetry.ExecutionRecord{Command: "legacy-fixture"}); err != nil {
+			tel.Close()
+			t.Fatal(err)
+		}
+		if err := tel.Close(); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(binary, "pi", "transform")
+		cmd.Stdin = strings.NewReader(`{"command":"unknown","output":"fixture"}`)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("in-place startup: %v %s", err, out)
+		}
+		tel, err = telemetry.NewTelemetry(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tel.Close()
+		records, err := tel.GetRecentExecutions(10, "")
+		if err != nil || len(records) != 2 {
+			t.Fatalf("legacy history not retained in place: %#v %v", records, err)
+		}
+		if _, err := os.Stat(filepath.Join(defaultBase, "TheBrain")); !os.IsNotExist(err) {
+			t.Fatalf("unexpected default migration target: %v", err)
+		}
+	})
+
 }

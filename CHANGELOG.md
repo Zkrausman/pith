@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.5] - 2026-09-16
+### Fixed
+- Stop implicit legacy database/config relocation during command startup, updates, version queries, and Pi transforms; alternate storage never imports legacy telemetry or renames source files/backups.
+- Keep legacy storage in place when its config location is selected, while preserving existing configured destinations. Read-only Pi legacy settings fallback no longer overrides the selected storage, regardless of telemetry consent.
+- Disable unsafe raw-file database migration, including equivalent-path aliases. Deliberate migration requires a separately planned consistent database backup.
+
 ## [2.4.4] - 2026-09-16
 ### Fixed
 - Honor explicit Pi hook telemetry opt-out without opening, creating, modifying, or migrating the telemetry database; omitted CLI `telemetryEnabled` remains enabled by default.

@@ -2,77 +2,44 @@ package config
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 )
 
-// migrationOutput keeps machine-readable command output, including Pi hook
-// transform responses, free of migration notices.
-var migrationOutput io.Writer = os.Stderr
-
+// MigrateStorage no longer copies or renames legacy storage. Raw file copies
+// cannot safely migrate an active SQLite database (including its WAL).
+//
+// Deprecated: select the existing storage location instead. Deliberate migration
+// requires a consistent database backup and must be planned separately.
 func MigrateStorage(targetPath string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
 	oldPath := filepath.Join(home, ".pith")
-
-	// If old path doesn't exist, nothing to migrate
-	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+	oldInfo, err := os.Stat(oldPath)
+	if os.IsNotExist(err) {
 		return nil
 	}
-
-	// If target is the same as old, nothing to do
-	if oldPath == targetPath {
-		return nil
-	}
-
-	// Create target directory
-	if err := os.MkdirAll(targetPath, 0755); err != nil {
+	if err != nil {
 		return err
 	}
-
-	files := []string{"pith.db", "config.json"}
-	for _, f := range files {
-		src := filepath.Join(oldPath, f)
-		dst := filepath.Join(targetPath, f)
-
-		// Skip if source doesn't exist
-		if _, err := os.Stat(src); os.IsNotExist(err) {
-			continue
-		}
-
-		// Skip if destination already exists (don't overwrite)
-		if _, err := os.Stat(dst); err == nil {
-			continue
-		}
-
-		fmt.Fprintf(migrationOutput, "[Pith] Migrating %s to %s...\n", f, targetPath)
-		if err := copyFile(src, dst); err != nil {
-			return fmt.Errorf("failed to migrate %s: %w", f, err)
-		}
-
-		// Optional: rename old file to .bak instead of deleting immediately for safety
-		_ = os.Rename(src, src+".bak")
+	if !oldInfo.IsDir() {
+		return fmt.Errorf("legacy storage is not a directory")
 	}
-
+	targetInfo, err := os.Stat(targetPath)
+	if err == nil && os.SameFile(oldInfo, targetInfo) {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, name := range []string{"pith.db", "pith.db-wal", "pith.db-shm", "config.json"} {
+		if _, err := os.Lstat(filepath.Join(oldPath, name)); err == nil {
+			return fmt.Errorf("automatic legacy storage migration is disabled; select the existing storage location or arrange a consistent database backup before changing storage")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	return nil
-}
-
-func copyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	destFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer destFile.Close()
-
-	_, err = io.Copy(destFile, sourceFile)
-	return err
 }

@@ -60,87 +60,6 @@ func TestLoadConfig_WithDefaultsApplied(t *testing.T) {
 	}
 }
 
-func TestMigrateStorage_NoOldPath2(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("USERPROFILE", tmpDir)
-
-	// ~/.pith doesn't exist in tmpDir, so migration should return nil
-	err := MigrateStorage(filepath.Join(tmpDir, "new_storage"))
-	if err != nil {
-		t.Errorf("Expected no error when old path doesn't exist, got %v", err)
-	}
-}
-
-func TestMigrateStorage_SamePath2(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("USERPROFILE", tmpDir)
-
-	// Create ~/.pith in tmpDir
-	oldPath := filepath.Join(tmpDir, ".pith")
-	os.MkdirAll(oldPath, 0755)
-
-	// Migrate to same path -> should return nil immediately
-	err := MigrateStorage(oldPath)
-	if err != nil {
-		t.Errorf("Expected no error for same-path migration, got %v", err)
-	}
-}
-
-func TestMigrateStorage_WithFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("USERPROFILE", tmpDir)
-
-	// Create ~/.pith with files
-	oldPath := filepath.Join(tmpDir, ".pith")
-	os.MkdirAll(oldPath, 0755)
-	os.WriteFile(filepath.Join(oldPath, "pith.db"), []byte("db content"), 0644)
-	os.WriteFile(filepath.Join(oldPath, "config.json"), []byte(`{"max_lines":100}`), 0644)
-
-	newPath := filepath.Join(tmpDir, "new_storage")
-
-	err := MigrateStorage(newPath)
-	if err != nil {
-		t.Fatalf("MigrateStorage failed: %v", err)
-	}
-
-	// Verify files were copied
-	if _, err := os.Stat(filepath.Join(newPath, "pith.db")); os.IsNotExist(err) {
-		t.Error("Expected pith.db to be migrated")
-	}
-	if _, err := os.Stat(filepath.Join(newPath, "config.json")); os.IsNotExist(err) {
-		t.Error("Expected config.json to be migrated")
-	}
-}
-
-func TestMigrateStorage_SkipsExistingDest(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("USERPROFILE", tmpDir)
-
-	oldPath := filepath.Join(tmpDir, ".pith")
-	os.MkdirAll(oldPath, 0755)
-	os.WriteFile(filepath.Join(oldPath, "pith.db"), []byte("old db"), 0644)
-
-	newPath := filepath.Join(tmpDir, "new_storage")
-	os.MkdirAll(newPath, 0755)
-	// Pre-create dest file so migration skips it
-	os.WriteFile(filepath.Join(newPath, "pith.db"), []byte("existing db"), 0644)
-
-	err := MigrateStorage(newPath)
-	if err != nil {
-		t.Fatalf("MigrateStorage failed: %v", err)
-	}
-
-	// Verify the original dest file was NOT overwritten
-	data, _ := os.ReadFile(filepath.Join(newPath, "pith.db"))
-	if string(data) != "existing db" {
-		t.Errorf("Expected existing db content to be preserved, got %s", string(data))
-	}
-}
-
 func TestSave_CreatesFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("PITH_STORAGE", tmpDir)
@@ -163,40 +82,5 @@ func TestSave_CreatesFile(t *testing.T) {
 	}
 	if loaded.MaxLines != 999 {
 		t.Errorf("Expected MaxLines 999, got %d", loaded.MaxLines)
-	}
-}
-
-func TestCopyFile_Error(t *testing.T) {
-	// Try to copy a non-existent file
-	err := copyFile("/nonexistent/source.txt", "/tmp/dest.txt")
-	if err == nil {
-		t.Error("Expected error when source file doesn't exist")
-	}
-}
-
-func TestMigrateStorage_WithExtraFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("USERPROFILE", tmpDir)
-
-	// Create ~/.pith with only config.json (pith.db missing)
-	oldPath := filepath.Join(tmpDir, ".pith")
-	os.MkdirAll(oldPath, 0755)
-	os.WriteFile(filepath.Join(oldPath, "config.json"), []byte(`{"max_lines":200}`), 0644)
-	// pith.db intentionally missing
-
-	newPath := filepath.Join(tmpDir, "new_storage2")
-
-	err := MigrateStorage(newPath)
-	if err != nil {
-		t.Fatalf("MigrateStorage failed: %v", err)
-	}
-
-	// config.json should be copied but pith.db should not exist
-	if _, err := os.Stat(filepath.Join(newPath, "config.json")); os.IsNotExist(err) {
-		t.Error("Expected config.json to be migrated")
-	}
-	if _, err := os.Stat(filepath.Join(newPath, "pith.db")); err == nil {
-		t.Error("Expected pith.db NOT to be migrated (it didn't exist)")
 	}
 }
