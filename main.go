@@ -535,9 +535,11 @@ func runHook(cmd *cobra.Command, args []string) error {
 		return respondAllow(cmd)
 	}
 	var p parser.Parser
+	reason := telemetry.DecisionProtectedPassthrough
 	// Quoted invocations and shell syntax are intentionally preserved rather
 	// than normalized into a destructive parser for aggregate output.
 	if !parser.MayContainShellSyntax(command) {
+		reason = telemetry.DecisionUnsupportedParser
 		for _, candidate := range parser.GetAllParsers() {
 			enabled, configured := cfg.EnabledParsers[candidate.Name()]
 			if (!configured || enabled) && candidate.CanParse(cmdParts[0], cmdParts[1:]) {
@@ -554,16 +556,21 @@ func runHook(cmd *cobra.Command, args []string) error {
 		compressed = p.Parse(originalOutput)
 		parserUsed = p.Name()
 		isPassthrough = false
+		reason = telemetry.DecisionTransformed
 	} else {
 		compressed = originalOutput
 	}
 	truncated := run.ApplyMiddleOutTruncation(compressed)
 	wasTruncated := truncated != compressed
+	if wasTruncated {
+		reason = telemetry.DecisionTransformed
+	}
 	origTokens := runner.EstimateTokensWithHeuristic(originalOutput, cfg.TokenHeuristic)
 	compTokens := runner.EstimateTokensWithHeuristic(truncated, cfg.TokenHeuristic)
 	savedTokens := origTokens - compTokens
 	if tel != nil {
 		_ = tel.Record(telemetry.ExecutionRecord{
+			DecisionReason:   reason,
 			Command:          command,
 			OriginalTokens:   origTokens,
 			CompressedTokens: compTokens,

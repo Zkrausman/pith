@@ -47,7 +47,12 @@ func TestOptimizeHookTelemetryDisabledDoesNotModifyExistingDatabase(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Opening this database would scrub these legacy contents, even without Record.
+	// Simulate a pre-reason database. Opening it would both migrate the schema
+	// and scrub these legacy contents, even without Record.
+	if _, err := tel.DB.Exec("ALTER TABLE executions DROP COLUMN decision_reason"); err != nil {
+		tel.Close()
+		t.Fatal(err)
+	}
 	_, err = tel.DB.Exec(`INSERT INTO executions (command, original_content, compressed_content) VALUES ('fixture', 'synthetic legacy input', 'synthetic legacy output')`)
 	if err != nil {
 		tel.Close()

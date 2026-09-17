@@ -15,7 +15,41 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// DecisionReason is bounded accounting metadata, never a free-form explanation.
+type DecisionReason string
+
+const (
+	DecisionTransformed          DecisionReason = "transformed"
+	DecisionProtectedPassthrough DecisionReason = "protected_passthrough"
+	DecisionUnsupportedParser    DecisionReason = "unsupported_parser"
+	DecisionRejectedNonReduction DecisionReason = "rejected_non_reduction"
+	DecisionUnknown              DecisionReason = "unknown"
+)
+
+// NormalizeDecisionReason does not infer decisions from other execution fields.
+func NormalizeDecisionReason(reason DecisionReason) DecisionReason {
+	switch reason {
+	case DecisionTransformed, DecisionProtectedPassthrough, DecisionUnsupportedParser, DecisionRejectedNonReduction, DecisionUnknown:
+		return reason
+	default:
+		return DecisionUnknown
+	}
+}
+
+// UnmarshalJSON treats invalid imported reason values as unknown, including
+// non-string values, without retaining their contents.
+func (r *DecisionReason) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		*r = DecisionUnknown
+		return nil
+	}
+	*r = NormalizeDecisionReason(DecisionReason(value))
+	return nil
+}
+
 type ExecutionRecord struct {
+	DecisionReason      DecisionReason `json:"decision_reason"`
 	ID                  int64
 	Timestamp           time.Time
 	Command             string
@@ -104,6 +138,7 @@ func NewTelemetryWithPath(dbPath string) (*Telemetry, error) {
 
 	t := &Telemetry{DB: db}
 	if err := t.init(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 
@@ -126,12 +161,25 @@ func (t *Telemetry) init() error {
 		source TEXT DEFAULT 'unknown',
 		harness TEXT DEFAULT 'unknown',
 		model TEXT DEFAULT 'unknown',
-		input_cost_per_million REAL
+		input_cost_per_million REAL,
+		decision_reason TEXT NOT NULL DEFAULT 'unknown'
 	);`
 
 	_, err := t.DB.Exec(query)
 	if err != nil {
 		return err
+	}
+
+	// Add only the bounded metadata column. Legacy decisions stay unknown;
+	// unlike duplicate-column errors, genuine migration failures must surface.
+	var reasonColumns int
+	if err := t.DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('executions') WHERE name = 'decision_reason'").Scan(&reasonColumns); err != nil {
+		return fmt.Errorf("inspect decision_reason column: %w", err)
+	}
+	if reasonColumns == 0 {
+		if _, err := t.DB.Exec("ALTER TABLE executions ADD COLUMN decision_reason TEXT NOT NULL DEFAULT 'unknown'"); err != nil {
+			return fmt.Errorf("add decision_reason column: %w", err)
+		}
 	}
 
 	// Migrations for columns
@@ -191,6 +239,7 @@ func (t *Telemetry) init() error {
 }
 
 func (t *Telemetry) Record(rec ExecutionRecord) error {
+	rec.DecisionReason = NormalizeDecisionReason(rec.DecisionReason)
 	rec.Command = redactCommand(rec.Command)
 	// Telemetry supports accounting and parser discovery, not output retention.
 	rec.OriginalContent = ""
@@ -207,10 +256,10 @@ func (t *Telemetry) Record(rec ExecutionRecord) error {
 	if strings.TrimSpace(rec.Model) == "" {
 		rec.Model = "unknown"
 	}
-	query := `INSERT INTO executions (command, original_tokens, compressed_tokens, original_content, compressed_content, duration_ms, parser_used, is_passthrough, source, harness, model, input_cost_per_million)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO executions (command, original_tokens, compressed_tokens, original_content, compressed_content, duration_ms, parser_used, is_passthrough, source, harness, model, input_cost_per_million, decision_reason)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := t.DB.Exec(query, rec.Command, rec.OriginalTokens, rec.CompressedTokens, rec.OriginalContent, rec.CompressedContent, rec.DurationMs, rec.ParserUsed, rec.IsPassthrough, rec.Source, rec.Harness, rec.Model, rec.InputCostPerMillion)
+	_, err := t.DB.Exec(query, rec.Command, rec.OriginalTokens, rec.CompressedTokens, rec.OriginalContent, rec.CompressedContent, rec.DurationMs, rec.ParserUsed, rec.IsPassthrough, rec.Source, rec.Harness, rec.Model, rec.InputCostPerMillion, rec.DecisionReason)
 	return err
 }
 
@@ -559,7 +608,7 @@ func (t *Telemetry) GetRecentExecutions(limit int, source string) ([]ExecutionRe
 	args = append(args, limit)
 
 	query := fmt.Sprintf(`
-	SELECT id, timestamp, command, original_tokens, compressed_tokens, duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million
+	SELECT id, timestamp, command, original_tokens, compressed_tokens, duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
 	%s
 	ORDER BY timestamp DESC
@@ -575,12 +624,13 @@ func (t *Telemetry) GetRecentExecutions(limit int, source string) ([]ExecutionRe
 
 	for rows.Next() {
 		var r ExecutionRecord
-		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion); err != nil {
+		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion, &r.DecisionReason); err != nil {
 			return nil, err
 		}
 		if r.Harness == "" {
 			r.Harness = "unknown"
 		}
+		r.DecisionReason = NormalizeDecisionReason(r.DecisionReason)
 		results = append(results, r)
 	}
 
@@ -660,16 +710,17 @@ func (t *Telemetry) GetSources() ([]string, error) {
 
 func (t *Telemetry) GetExecutionDetails(id int64) (*ExecutionRecord, error) {
 	query := `
-	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million
+	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
 	WHERE id = ?`
 
 	var r ExecutionRecord
-	err := t.DB.QueryRow(query, id).Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.OriginalContent, &r.CompressedContent, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion)
+	err := t.DB.QueryRow(query, id).Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.OriginalContent, &r.CompressedContent, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion, &r.DecisionReason)
 	if err != nil {
 		return nil, err
 	}
 
+	r.DecisionReason = NormalizeDecisionReason(r.DecisionReason)
 	return &r, nil
 }
 
@@ -698,7 +749,7 @@ func (t *Telemetry) SearchExecutions(queryStr string, source string, limit int) 
 	args = append(args, limit)
 
 	sqlQuery := fmt.Sprintf(`
-	SELECT id, timestamp, command, original_tokens, compressed_tokens, duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million
+	SELECT id, timestamp, command, original_tokens, compressed_tokens, duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
 	%s
 	ORDER BY timestamp DESC
@@ -716,7 +767,7 @@ func (t *Telemetry) SearchExecutions(queryStr string, source string, limit int) 
 		fallbackArgs = append(fallbackArgs, limit)
 
 		fallbackSqlQuery := fmt.Sprintf(`
-		SELECT id, timestamp, command, original_tokens, compressed_tokens, duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million
+		SELECT id, timestamp, command, original_tokens, compressed_tokens, duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 		FROM executions
 		%s
 		ORDER BY timestamp DESC
@@ -732,12 +783,13 @@ func (t *Telemetry) SearchExecutions(queryStr string, source string, limit int) 
 	var results []ExecutionRecord
 	for rows.Next() {
 		var r ExecutionRecord
-		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion); err != nil {
+		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion, &r.DecisionReason); err != nil {
 			return nil, err
 		}
 		if r.Harness == "" {
 			r.Harness = "unknown"
 		}
+		r.DecisionReason = NormalizeDecisionReason(r.DecisionReason)
 		results = append(results, r)
 	}
 
@@ -746,7 +798,7 @@ func (t *Telemetry) SearchExecutions(queryStr string, source string, limit int) 
 
 func (t *Telemetry) ExportJSONL(w io.Writer) error {
 	query := `
-	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million
+	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
 	ORDER BY id ASC`
 
@@ -759,9 +811,11 @@ func (t *Telemetry) ExportJSONL(w io.Writer) error {
 	encoder := json.NewEncoder(w)
 	for rows.Next() {
 		var r ExecutionRecord
-		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.OriginalContent, &r.CompressedContent, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion); err != nil {
+		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.OriginalContent, &r.CompressedContent, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion, &r.DecisionReason); err != nil {
 			return err
 		}
+		r.DecisionReason = NormalizeDecisionReason(r.DecisionReason)
+		r.OriginalContent, r.CompressedContent = "", ""
 		if err := encoder.Encode(r); err != nil {
 			return err
 		}
@@ -779,8 +833,8 @@ func (t *Telemetry) ImportJSONL(r io.Reader) error {
 
 	decoder := json.NewDecoder(r)
 	query := `
-	INSERT OR IGNORE INTO executions (timestamp, command, original_tokens, compressed_tokens, original_content, compressed_content, duration_ms, parser_used, is_passthrough, source, harness, model, input_cost_per_million)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	INSERT OR IGNORE INTO executions (timestamp, command, original_tokens, compressed_tokens, original_content, compressed_content, duration_ms, parser_used, is_passthrough, source, harness, model, input_cost_per_million, decision_reason)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	stmt, err := tx.Prepare(query)
 	if err != nil {
@@ -796,6 +850,8 @@ func (t *Telemetry) ImportJSONL(r io.Reader) error {
 			return err
 		}
 
+		rec.DecisionReason = NormalizeDecisionReason(rec.DecisionReason)
+		rec.OriginalContent, rec.CompressedContent = "", ""
 		tVal := rec.Timestamp
 		if tVal.IsZero() {
 			tVal = time.Now()
@@ -812,7 +868,7 @@ func (t *Telemetry) ImportJSONL(r io.Reader) error {
 		if strings.TrimSpace(rec.Model) == "" {
 			rec.Model = "unknown"
 		}
-		_, err = stmt.Exec(tVal, rec.Command, rec.OriginalTokens, rec.CompressedTokens, rec.OriginalContent, rec.CompressedContent, rec.DurationMs, rec.ParserUsed, rec.IsPassthrough, rec.Source, rec.Harness, rec.Model, rec.InputCostPerMillion)
+		_, err = stmt.Exec(tVal, rec.Command, rec.OriginalTokens, rec.CompressedTokens, rec.OriginalContent, rec.CompressedContent, rec.DurationMs, rec.ParserUsed, rec.IsPassthrough, rec.Source, rec.Harness, rec.Model, rec.InputCostPerMillion, rec.DecisionReason)
 		if err != nil {
 			return err
 		}
@@ -823,7 +879,7 @@ func (t *Telemetry) ImportJSONL(r io.Reader) error {
 
 func (t *Telemetry) ExportJSONLSince(w io.Writer, sinceID int64) error {
 	query := `
-	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million
+	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
 	WHERE id > ?
 	ORDER BY id ASC`
@@ -837,9 +893,11 @@ func (t *Telemetry) ExportJSONLSince(w io.Writer, sinceID int64) error {
 	encoder := json.NewEncoder(w)
 	for rows.Next() {
 		var r ExecutionRecord
-		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.OriginalContent, &r.CompressedContent, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion); err != nil {
+		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Command, &r.OriginalTokens, &r.CompressedTokens, &r.OriginalContent, &r.CompressedContent, &r.DurationMs, &r.ParserUsed, &r.IsPassthrough, &r.Source, &r.Harness, &r.Model, &r.InputCostPerMillion, &r.DecisionReason); err != nil {
 			return err
 		}
+		r.DecisionReason = NormalizeDecisionReason(r.DecisionReason)
+		r.OriginalContent, r.CompressedContent = "", ""
 		if err := encoder.Encode(r); err != nil {
 			return err
 		}
