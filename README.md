@@ -157,6 +157,8 @@ Pith uses [promptfoo](https://promptfoo.dev/) to evaluate the performance and qu
 
 Pith releases are currently built and tested for **Linux amd64**, **Windows amd64**, and **macOS arm64**. Unsupported platforms are not offered release binaries.
 
+Maintainers: see the [verified release publication and failure-triage runbook](docs/releases.md).
+
 The dashboard binds to loopback by default and is intended for the local machine only. Diagnostic logs are disabled by default; update/network behavior and retention limits are described in [PRIVACY.md](PRIVACY.md). Release dependency inventory and license evidence are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the attached CycloneDX SBOM.
 
 “Pith” is an independent project name and is not affiliated with, endorsed by, or sponsored by any LLM provider, terminal client, or third-party dependency named here.
