@@ -23,6 +23,8 @@ jobs:
           cache: true
       - run: go mod download
       - run: go test -v ./...
+      - name: Test release publication safeguards
+        run: python3 -m unittest discover -s .github/tests -v
 
   windows-link-check:
     # Exercise native DuckDB/CGo linking before a release tag is created.
@@ -111,8 +113,14 @@ jobs:
           sha256sum pith-* > checksums.txt
           go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
           cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --output-signature checksums.txt.sig checksums.txt
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.3.2
+      - name: Preserve complete signed release assets before publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: dist/*
+          name: signed-release-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload sequentially and publish only verified complete assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/publish_release.py "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" dist
