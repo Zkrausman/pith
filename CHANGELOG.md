@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.6] - 2026-09-17
+### Fixed
+- Account for output-preservation decisions using a fixed privacy-safe reason enum at existing decision sites, without changing transformation or provenance behavior.
+- Normalize legacy and invalid imported reasons to `unknown`, keep raw output empty on insertion/import/export, and preserve existing explicit telemetry opt-outs before database initialization.
+
+### Release notes
+- Owner-approved patch release of the preservation-accounting corrections from PR #165; supplies the version and changelog update omitted from that PR.
+
 ## [2.4.5] - 2026-09-16
 ### Fixed
 - Stop implicit legacy database/config relocation during command startup, updates, version queries, and Pi transforms; alternate storage never imports legacy telemetry or renames source files/backups.
