@@ -61,7 +61,13 @@ def publish(repository, tag, directory, run=gh):
     for name in ASSETS:
         print("Uploading " + name, flush=True)
         run("release", "upload", tag, str(Path(directory) / name), "--repo", repository)
-    endpoint = f"repos/{repository}/releases/tags/{tag}"
+    # GitHub's by-tag REST endpoint excludes drafts. gh resolves drafts through
+    # the release list; pin its numeric ID for both pre/post-publication checks.
+    release_id = json.loads(run("release", "view", tag, "--repo", repository,
+                                "--json", "databaseId"))["databaseId"]
+    if type(release_id) is not int or release_id <= 0:
+        raise ValueError("invalid release database ID")
+    endpoint = f"repos/{repository}/releases/{release_id}"
     verify_remote(json.loads(run("api", endpoint)), tag, expected, True)
     run("release", "edit", tag, "--repo", repository, "--draft=false", "--latest")
     verify_remote(json.loads(run("api", endpoint)), tag, expected, False)
