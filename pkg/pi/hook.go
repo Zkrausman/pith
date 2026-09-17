@@ -110,15 +110,18 @@ func OptimizeHook(req HookRequest) HookResponse {
 	}
 	result := responseMetadata(req.Output, maybeRedact(req.Output, cfg), strategy, upstream)
 	result.Passthrough = true
+	reason := telemetry.DecisionUnknown
 	if !req.RawBypass && !mustPreserveOutput(req.Command, req.Output, req.ExitCode) && !diffMarkerRegex.MatchString(req.Output) {
 		parts := strings.Fields(req.Command)
 		if len(parts) > 0 {
+			reason = telemetry.DecisionUnsupportedParser
 			for _, candidate := range parser.GetAllParsers() {
 				enabled, configured := req.EnabledParsers[candidate.Name()]
 				if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
 					rawParsed := candidate.Parse(req.Output)
 					// Unsupported Git log formats retain passthrough provenance.
 					if candidate.Name() == "git_log" && rawParsed == req.Output {
+						reason = telemetry.DecisionUnsupportedParser
 						break
 					}
 					parsed := maybeRedact(rawParsed, cfg)
@@ -126,6 +129,7 @@ func OptimizeHook(req HookRequest) HookResponse {
 					// representation. On rejection retain passthrough provenance.
 					if candidate.Name() == "grep" && (len(parsed) > len(result.Output) ||
 						runner.EstimateTokensWithHeuristic(parsed, 4) >= runner.EstimateTokensWithHeuristic(result.Output, 4)) {
+						reason = telemetry.DecisionRejectedNonReduction
 						break
 					}
 					result = responseMetadata(req.Output, parsed, "parser:"+candidate.Name(), false)
@@ -136,10 +140,13 @@ func OptimizeHook(req HookRequest) HookResponse {
 						result.ParserNetByteReduction = bytes
 					}
 					result.Passthrough = false
+					reason = telemetry.DecisionTransformed
 					break
 				}
 			}
 		}
+	} else {
+		reason = telemetry.DecisionProtectedPassthrough
 	}
 	if !req.TelemetryEnabled {
 		return result
@@ -150,7 +157,7 @@ func OptimizeHook(req HookRequest) HookResponse {
 		if cost != nil && (*cost < 0 || math.IsNaN(*cost) || math.IsInf(*cost, 0)) {
 			cost = nil
 		}
-		_ = tel.Record(telemetry.ExecutionRecord{Command: req.Command, OriginalTokens: runner.EstimateTokensWithHeuristic(req.Output, 4), CompressedTokens: runner.EstimateTokensWithHeuristic(result.Output, 4), DurationMs: time.Since(started).Milliseconds(), ParserUsed: result.Parser, IsPassthrough: result.Passthrough, Source: HarnessPi, Harness: HarnessPi, Model: req.Model, InputCostPerMillion: cost})
+		_ = tel.Record(telemetry.ExecutionRecord{DecisionReason: reason, Command: req.Command, OriginalTokens: runner.EstimateTokensWithHeuristic(req.Output, 4), CompressedTokens: runner.EstimateTokensWithHeuristic(result.Output, 4), DurationMs: time.Since(started).Milliseconds(), ParserUsed: result.Parser, IsPassthrough: result.Passthrough, Source: HarnessPi, Harness: HarnessPi, Model: req.Model, InputCostPerMillion: cost})
 	}
 	return result
 }

@@ -163,20 +163,25 @@ func (r *Runner) LogForSnag(cmdStr string, output string, exitCode int) {
 // selectParser never applies a single-command parser to possible aggregate
 // output. The runner's separate middle-out truncation policy is unchanged.
 func (r *Runner) selectParser(command string) parser.Parser {
+	p, _ := r.selectParserWithReason(command)
+	return p
+}
+
+func (r *Runner) selectParserWithReason(command string) (parser.Parser, telemetry.DecisionReason) {
 	if parser.MayContainShellSyntax(command) {
-		return nil
+		return nil, telemetry.DecisionProtectedPassthrough
 	}
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
-		return nil
+		return nil, telemetry.DecisionUnknown
 	}
 	for _, candidate := range r.parsers {
 		enabled, configured := r.cfg.EnabledParsers[candidate.Name()]
 		if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
-			return candidate
+			return candidate, telemetry.DecisionUnknown
 		}
 	}
-	return nil
+	return nil, telemetry.DecisionUnsupportedParser
 }
 
 func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
@@ -252,8 +257,9 @@ func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 	originalTokens := r.EstimateTokens(fullOutput)
 
 	var p parser.Parser
+	reason := telemetry.DecisionProtectedPassthrough
 	if !skipParsing {
-		p = r.selectParser(fullCmd)
+		p, reason = r.selectParserWithReason(fullCmd)
 	}
 
 	var finalOutput string
@@ -265,12 +271,17 @@ func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 		finalOutput = p.Parse(fullOutput)
 		parserUsed = p.Name()
 		isPassthrough = false
+		reason = telemetry.DecisionTransformed
 	} else {
 		finalOutput = fullOutput
 	}
 
 	// Apply Middle-Out Truncation
-	finalOutput = r.ApplyMiddleOutTruncation(finalOutput)
+	truncated := r.ApplyMiddleOutTruncation(finalOutput)
+	if truncated != finalOutput {
+		reason = telemetry.DecisionTransformed
+	}
+	finalOutput = truncated
 
 	compressedTokens := r.EstimateTokens(finalOutput)
 
@@ -295,6 +306,7 @@ func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 
 	// Record telemetry
 	record := telemetry.ExecutionRecord{
+		DecisionReason:      reason,
 		Command:             strings.Join(args, " "),
 		OriginalTokens:      originalTokens,
 		CompressedTokens:    compressedTokens,

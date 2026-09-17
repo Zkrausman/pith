@@ -2,6 +2,43 @@
 
 This package manages the recording and retrieval of command execution statistics and unparsed command discovery.
 
+## Decision accounting and privacy
+
+`ExecutionRecord.DecisionReason` is stored in the additive SQLite `decision_reason`
+column (`TEXT NOT NULL DEFAULT 'unknown'`) and exported under JSON name
+`decision_reason`. Its only values are:
+
+| Value | Existing decision described |
+| --- | --- |
+| `transformed` | Accepted parser processing, or actual byte-changing runner/main middle-out truncation |
+| `protected_passthrough` | Explicit parsing bypass or an existing preservation guard |
+| `unsupported_parser` | No eligible/enabled parser, or Pi's unsupported Git-log output branch |
+| `rejected_non_reduction` | Pi's existing grep byte/token reduction check rejected processing |
+| `unknown` | Legacy, absent, invalid, or unclassifiable metadata |
+
+Reasons are assigned at decision sites in Pi, runner, and the independent main
+hook, not reconstructed from command history. `transformed` does not guarantee
+savings: only existing reduction guards apply. Middle-out transformation takes
+precedence over an earlier parser bypass, without changing `ParserUsed` or
+`IsPassthrough`. Reasons are accounting only; hook response/provenance fields and
+output behavior are unchanged. No generic chain compression is introduced.
+
+The allowlist normalizes writes, imports, reads, and exports. Legacy rows default
+to `unknown`; initialization checks column existence and surfaces genuine errors
+from the additive migration. Reasons never include free-form explanations.
+
+Record and JSONL import clear both content fields. Full and incremental JSONL
+exports emit empty content fields even for legacy output written after opening
+the store. Existing command redaction on Record and command metadata on JSONL
+round trips are unchanged. Import still uses `INSERT OR IGNORE` with identity
+`(timestamp, command, duration_ms)`; reasons are not part of duplicate identity.
+
+Check existing explicit telemetry opt-outs **before** constructing a telemetry
+store, because construction initializes/migrates SQLite. Pi CLI requests default
+to enabled when `telemetryEnabled` is omitted; explicit `false` must not create or
+migrate storage. Go `OptimizeHook` callers retain their zero-value disabled
+contract. No new consent source or retention policy is introduced.
+
 ```mermaid
 graph TD
     ExecutionRecord["ExecutionRecord [pkg/telemetry/telemetry.go]"]
