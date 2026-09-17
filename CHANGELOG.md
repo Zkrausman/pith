@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.7] - 2026-09-17
+### Fixed
+- Upload release assets sequentially to a draft and require the exact expected asset set, uploaded state, sizes, and SHA-256 digests before publication. Incomplete uploads fail closed without overwriting assets or retrying automatically.
+- Retain the complete signed release artifact set in CI before publication, with offline regression tests for upload failures and invalid or incomplete assets.
+
+### Release notes
+- Supersedes the unpublished v2.4.6 release attempt, which built successfully but failed uploading the Windows executable. Its original tag and draft remain unchanged.
+- Includes the privacy-safe preservation accounting from PR #165. These publication safeguards do not claim to fix the underlying GitHub service failure.
+
 ## [2.4.6] - 2026-09-17
 ### Fixed
 - Account for output-preservation decisions using a fixed privacy-safe reason enum at existing decision sites, without changing transformation or provenance behavior.
