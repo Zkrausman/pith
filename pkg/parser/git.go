@@ -46,7 +46,7 @@ func (g *GitStatusParser) Parse(output string) string {
 			strings.HasPrefix(trimmed, "Untracked files") ||
 			strings.HasPrefix(trimmed, "Everything up-to-date") ||
 			strings.HasPrefix(trimmed, "To ") ||
-			strings.Contains(trimmed, "->") { // push output
+			(strings.Contains(trimmed, "->") && !strings.HasPrefix(trimmed, "renamed:")) { // push output, but keep status renames
 			continue
 		}
 		result = append(result, trimmed)
