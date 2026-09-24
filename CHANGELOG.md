@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.9] - 2026-09-24
+### Fixed
+- Preserve complete filenames containing spaces in compressed plain and long `ls` output, with focused regression coverage.
+
 ## [2.4.8] - 2026-09-17
 ### Fixed
 - Verify draft release assets through the release's immutable numeric ID rather than the public by-tag endpoint, which returns 404 for drafts. Tests model that endpoint restriction and reject invalid release IDs.

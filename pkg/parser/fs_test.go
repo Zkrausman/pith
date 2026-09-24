@@ -29,6 +29,28 @@ func TestLsParser(t *testing.T) {
 	}
 }
 
+func TestLsParserPreservesFilenamesWithSpaces(t *testing.T) {
+	p := &LsParser{}
+	for _, tc := range []struct{ name, input, want string }{
+		{"plain", "project notes.md\n", "project notes.md"},
+		{"plain multiple spaces", "project  notes.md\n", "project  notes.md"},
+		{"plain four words", "daily project meeting notes.md\n", "daily project meeting notes.md"},
+		{"plain without spaces", "main.go\n", "main.go"},
+		{"long", "total 8\n-rw-r--r-- 1 user group 42 Jan 1 12:00 project notes.md\n", "42 project notes.md"},
+		{"long multiple spaces", "-rw-r--r-- 1 user group 42 Jan 1 12:00 project  notes.md\n", "42 project  notes.md"},
+		{"dir long", "-a--- 9/24/2026 10:00 42 project notes.md\n", "42 project notes.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.Parse(tc.input); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := p.Parse("one name.md\ntwo name.md\n"); got != "one name.md two name.md" {
+		t.Fatalf("short list layout changed: %q", got)
+	}
+}
+
 func TestFindParser(t *testing.T) {
 	p := &FindParser{}
 
