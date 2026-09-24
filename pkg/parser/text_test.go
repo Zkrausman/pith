@@ -20,6 +20,25 @@ pkg/runner/runner.go:20:func NewRunner() {
 	}
 }
 
+func TestGrepParserWindowsDrivePaths(t *testing.T) {
+	if !(&GrepParser{}).CanParse("rg", []string{"needle", "C:\\repo"}) {
+		t.Fatal("rg output is not routed to GrepParser")
+	}
+	input := "C:\\repo\\file.go:12:match:with:colons\nC:\\repo\\file.go:15:more\nD:/src/x.go:2:other\n"
+	want := "C:\\repo\\file.go:\n  12: match:with:colons\n  15: more\n\nD:/src/x.go:\n  2: other"
+	if got := (&GrepParser{}).Parse(input); got != want {
+		t.Fatalf("Windows paths changed: got %q, want %q", got, want)
+	}
+}
+
+func TestGrepParserPosixAndPlainLines(t *testing.T) {
+	input := "status line\nsrc/x.go:4:found:here\nsrc/x.go:5:again\n"
+	want := "status line\n\nsrc/x.go:\n  4: found:here\n  5: again"
+	if got := (&GrepParser{}).Parse(input); got != want {
+		t.Fatalf("POSIX/plain output changed: got %q, want %q", got, want)
+	}
+}
+
 func TestMinifyParser(t *testing.T) {
 	p := &MinifyParser{}
 	input := `{
