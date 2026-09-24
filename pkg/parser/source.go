@@ -19,8 +19,9 @@ func (s *SourceParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
 	var result []string
 
-	// Regex for common comment styles (Go, JS, C, Python, etc.)
-	reInline := regexp.MustCompile(`(//.*|#.*)`)
+	// Skip complete quoted HTTP(S) URLs before looking for // or # comments.
+	// This is deliberately limited to URL literals, not a general string lexer.
+	reInline := regexp.MustCompile(`"https?://[^"]*"|//.*|#.*`)
 
 	// High-signal keywords we want to preserve in comments
 	highSignal := regexp.MustCompile(`(?i)(BUG|TODO|FIXME|NOTE|HACK|WARN|IMPORTANT|CRITICAL)`)
@@ -58,16 +59,22 @@ func (s *SourceParser) Parse(output string) string {
 			continue
 		}
 
-		// Process inline comments
-		match := reInline.FindString(line)
-		if match != "" {
+		// Process the first actual comment, ignoring quoted URL matches.
+		commentStart := -1
+		for _, match := range reInline.FindAllStringIndex(line, -1) {
+			if line[match[0]] != '"' {
+				commentStart = match[0]
+				break
+			}
+		}
+		if commentStart >= 0 {
 			// If it's high signal, keep the whole line
-			if highSignal.MatchString(match) {
+			if highSignal.MatchString(line[commentStart:]) {
 				result = append(result, line)
 				continue
 			}
 			// Otherwise, strip the comment but keep the code
-			line = strings.TrimSpace(reInline.ReplaceAllString(line, ""))
+			line = strings.TrimSpace(line[:commentStart])
 		}
 
 		// Collapse excessive spaces (Issue #582: balance savings vs context)
