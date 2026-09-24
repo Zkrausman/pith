@@ -37,6 +37,33 @@ nothing added to commit but untracked files present (use "git add" to track)
 	}
 }
 
+func TestGitStatusParserPreservesRenamedPaths(t *testing.T) {
+	p := &GitStatusParser{}
+	for _, name := range []string{"staged", "unstaged"} {
+		t.Run(name, func(t *testing.T) {
+			section := "Changes to be committed:"
+			if name == "unstaged" {
+				section = "Changes not staged for commit:"
+			}
+			input := "On branch main\n" + section + "\n\trenamed:    old name.go -> new name.go\n"
+			got := p.Parse(input)
+			if !strings.Contains(got, "renamed:    old name.go -> new name.go") {
+				t.Fatalf("rename lost: %q", got)
+			}
+			if strings.Contains(got, "On branch") || strings.Contains(got, section) {
+				t.Fatalf("boilerplate retained: %q", got)
+			}
+		})
+	}
+	push := "To https://example.invalid/repo.git\n   abc1234..def5678  main -> main\nEverything up-to-date\n"
+	if got := p.Parse(push); got != "Git: Success (No verbose output)" {
+		t.Fatalf("push noise changed: %q", got)
+	}
+	if got := p.Parse("modified:   plain.go\n"); got != "modified:   plain.go" {
+		t.Fatalf("ordinary status changed: %q", got)
+	}
+}
+
 func TestGitLogParser(t *testing.T) {
 	p := &GitLogParser{}
 	input := `commit 3f7d7f7b12345678000000000000000000000000
