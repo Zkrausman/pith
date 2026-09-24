@@ -23,6 +23,14 @@ func (g *GrepParser) Parse(output string) string {
 		}
 		// Try to detect file:line:content
 		parts := strings.SplitN(trimmed, ":", 3)
+		// A Windows drive colon belongs to the filename, not the rg line
+		// delimiter. Split the remainder so content may still contain colons.
+		if len(trimmed) >= 3 && ((trimmed[0] >= 'A' && trimmed[0] <= 'Z') || (trimmed[0] >= 'a' && trimmed[0] <= 'z')) && trimmed[1] == ':' && (trimmed[2] == '\\' || trimmed[2] == '/') {
+			remainder := strings.SplitN(trimmed[2:], ":", 3)
+			if len(remainder) >= 2 {
+				parts = append([]string{trimmed[:2] + remainder[0]}, remainder[1:]...)
+			}
+		}
 		if len(parts) >= 2 {
 			file := parts[0]
 			if file != currentFile {
