@@ -21,6 +21,16 @@
 - [x] **Context ROI Heatmap**: Visualize which injected files consistently result in "Hits" vs. "Misses" to optimize `whet` injection logic.
 - [x] **Predictive Cost Advisor**: Estimate the total session cost based on current roadmap complexity.
 
+## Output Fidelity Roadmap
+
+Source-reviewed priorities and deterministic acceptance fixtures are in the [output-fidelity regression specification](output-fidelity-regressions.md). These are proposed engineering tasks; publishing this roadmap does not mark the behavior implemented or verified.
+
+- [ ] P0: preserve child numeric exit status at the shipped CLI boundary
+- [ ] P0: preserve stdout/stderr meaning and complete late failure diagnostics
+- [ ] P1: retain complete changed-file inventories and exact test counts
+- [ ] P1: disclose exact omissions and make raw output lossless
+- [ ] P1: preserve unsupported output without inventing success or coverage
+
 ## Maintenance & Stabilization
 - [x] **Fix cross-platform CI failures and shell execution (pith-btj)**
 - [x] **Release v0.14.6 (pith-ksi)**
