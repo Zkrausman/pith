@@ -8,48 +8,14 @@ import (
 	"strings"
 )
 
-// Diagnose performs an autonomous root-cause analysis of a given anomaly
-// using Thneed GraphRAG and a diagnostic LLM prompt.
+// Diagnose performs root-cause analysis using the details captured in an anomaly.
 func Diagnose(a Anomaly) (string, error) {
-	fmt.Printf("\n    [Pith Diagnostics] Querying Thneed for context related to '%s'...\n", a.Project)
+	fmt.Printf("\n    [Pith Diagnostics] Preparing analysis for '%s'...\n", a.Project)
 
-	// 1. Gather only a bounded, redacted prompt summary for local context.
-	query := fmt.Sprintf("%s anomaly: %s", diagnosticSnippet(a.Project), diagnosticSnippet(a.Prompt))
-	thneedCmd := exec.Command("thneed", "query", query, "--depth", "1")
-	var thneedOut bytes.Buffer
-	thneedCmd.Stdout = &thneedOut
-	_ = thneedCmd.Run() // Ignore errors, partial context is fine
-
-	contextPack := thneedOut.String()
-	if len(contextPack) > 2000 {
-		contextPack = contextPack[:2000] // Truncate to avoid massive prompts
-	}
-
-	// 2. Build the diagnostic prompt
-	prompt := fmt.Sprintf(`You are an expert AI Forensics Engineer.
-An anomaly was detected in our LLM telemetry stream. Your task is to diagnose the root cause and provide actionable advice.
-
-## Anomaly Details
-- Project: %s
-- Severity: %s
-- Flag Reason: %s
-- Model Used: %s
-
-## Offending Interaction
-**Prompt:** %s
-**Response:** %s
-
-## Related Codebase Context (via Thneed)
-%s
-
-Please provide a concise, structured Root Cause Analysis and a proposed fix.`,
-		a.Project, a.Severity, a.Reason, a.Model,
-		diagnosticSnippet(a.Prompt), diagnosticSnippet(a.Response),
-		diagnosticSnippet(contextPack))
-
+	prompt := diagnosticPrompt(a)
 	fmt.Println("    [Pith Diagnostics] Consulting the Oracle for Root Cause Analysis...")
 
-	// 3. Ask the LLM (Using gemini CLI, which Whet will intercept and route via Overseer)
+	// Ask the LLM using the configured Gemini CLI route.
 	geminiCmd := exec.Command("gemini", "chat", "--prompt", prompt)
 
 	// We want to force the oracle so Overseer handles it
@@ -66,6 +32,25 @@ Please provide a concise, structured Root Cause Analysis and a proposed fix.`,
 	}
 
 	return strings.TrimSpace(out.String()), nil
+}
+
+func diagnosticPrompt(a Anomaly) string {
+	return fmt.Sprintf(`You are an expert AI Forensics Engineer.
+An anomaly was detected in our LLM telemetry stream. Your task is to diagnose the root cause and provide actionable advice.
+
+## Anomaly Details
+- Project: %s
+- Severity: %s
+- Flag Reason: %s
+- Model Used: %s
+
+## Offending Interaction
+**Prompt:** %s
+**Response:** %s
+
+Please provide a concise, structured Root Cause Analysis and a proposed fix.`,
+		a.Project, a.Severity, a.Reason, a.Model,
+		diagnosticSnippet(a.Prompt), diagnosticSnippet(a.Response))
 }
 
 var diagnosticSecretPattern = regexp.MustCompile(`(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*[^\s]+`)

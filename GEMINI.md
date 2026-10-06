@@ -2,19 +2,9 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
-## Thneed-Aware Architectural Standard
+## Package README and Mermaid Standard
 - **Mandate**: All projects within 'E:\Repos' MUST have a README.md in every package containing a Mermaid diagram.
-- **Purpose**: High-signal conceptual indexing for Thneed GraphRAG.
-- **Skill**: Use 'thneed-navigator' for all codebase research.
-- **Diagrams**: Mermaid diagrams MUST use descriptive labels (e.g., NodeID[path/to/file.go]) to optimize Thneed lexical search.
-
-
-Before any structural code changes or major bug fixes, agents MUST:
-1. **Search Thneed**: Use `thneed query --text "<task_description>" --depth 2 --robots` to retrieve task-relevant context.
-2. Verify that the context returned by Thneed is sufficient for the task.
-3. **Audit Signal**: Look for `--- THNEED-POWERED SEARCH RESULTS ---` in the output to confirm you are using high-signal context.
-4. If search relevance is poor, file a task to improve Thneed's indexing for that area.
-
+- **Diagrams**: Mermaid diagrams MUST use descriptive labels (e.g., NodeID[path/to/file.go]) for clear architecture documentation.
 
 ## Work Tracking and Knowledge
 

@@ -15,3 +15,28 @@ func TestDiagnosticSnippetRedactsAndBoundsPayload(t *testing.T) {
 		t.Fatalf("diagnostic payload was not bounded: length %d", len(got))
 	}
 }
+
+func TestDiagnosticPromptIncludesAnomalyDetails(t *testing.T) {
+	anomaly := Anomaly{
+		Project:  "demo-project",
+		Severity: "critical",
+		Reason:   "synthetic anomaly reason",
+		Model:    "demo-model",
+		Prompt:   "synthetic prompt",
+		Response: "synthetic response",
+	}
+
+	prompt := diagnosticPrompt(anomaly)
+	for _, want := range []string{
+		"Project: demo-project",
+		"Severity: critical",
+		"Flag Reason: synthetic anomaly reason",
+		"Model Used: demo-model",
+		"**Prompt:** synthetic prompt",
+		"**Response:** synthetic response",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("diagnostic prompt is missing %q", want)
+		}
+	}
+}

@@ -19,15 +19,6 @@ func TestParsersCanParse(t *testing.T) {
 	}
 }
 
-func TestThneedParseJson(t *testing.T) {
-	p := &ThneedParser{}
-	input := `[{"id": "1", "path": "p1", "content": "c1"}, {"id": "2", "path": "p2"}]`
-	output := p.Parse(input)
-	if !strings.Contains(output, "Thneed found 2 nodes") {
-		t.Errorf("Unexpected output for thneed json: %s", output)
-	}
-}
-
 func TestWebParser_Edge(t *testing.T) {
 	p := &WebParser{}
 
@@ -57,15 +48,6 @@ func TestWebParser_Edge(t *testing.T) {
 	output = p.Parse(longText)
 	if !strings.Contains(output, "... (Total: 1200 chars)") {
 		t.Errorf("Expected truncation summary, got %s", output)
-	}
-}
-
-func TestThneedParseError(t *testing.T) {
-	p := &ThneedParser{}
-	input := `{"error": "something went wrong"}`
-	output := p.Parse(input)
-	if output != "Thneed Error: something went wrong" {
-		t.Errorf("Expected Thneed Error message, got %s", output)
 	}
 }
 
