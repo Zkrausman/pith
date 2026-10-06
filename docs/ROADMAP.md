@@ -31,6 +31,10 @@ Source-reviewed priorities and deterministic acceptance fixtures are in the [out
 - [ ] P1: disclose exact omissions and make raw output lossless
 - [ ] P1: preserve unsupported output without inventing success or coverage
 
+## Embedding research (proposed)
+
+The [EmbeddingGemma 2 feasibility proposal](https://github.com/Zkrausman/Squire/blob/3335ba528b9af884c9ff17c6e6af40c43579a46e/docs/proposals/embedding-gemma-integration.md) recommends only a separately authorized, opt-in offline/shadow discovery experiment using explicit public/synthetic or approved samples. Default synchronous inference is a no-go under the negligible/sub-millisecond overhead requirement. Current telemetry does not retain an output corpus; existing output-fidelity contracts remain prerequisites for any future content-changing mode. This research does not establish shipped embedding support or authorize implementation, model installation/inference, new capture or benchmarks.
+
 ## Maintenance & Stabilization
 - [x] **Fix cross-platform CI failures and shell execution (pith-btj)**
 - [x] **Release v0.14.6 (pith-ksi)**
