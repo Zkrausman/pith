@@ -839,11 +839,6 @@ graph TD
     encoding_json[["[EXTERNAL] json"]]
     unmarshal[["[EXTERNAL] unmarshal"]]
     json_unmarshal[["[EXTERNAL] json.unmarshal"]]
-    parsejson[["[EXTERNAL] parsejson"]]
-    parsejsonobject[["[EXTERNAL] parsejsonobject"]]
-    parseplain[["[EXTERNAL] parseplain"]]
-    writestring[["[EXTERNAL] writestring"]]
-    lastindex[["[EXTERNAL] lastindex"]]
     e__repos_pith_pkg_parser_vitest_go -.->|imports|  fmt
     e__repos_pith_pkg_parser_vitest_go -.->|imports|  strings
     e__repos_pith_pkg_parser_vitest_go_canparse -->|calls| matchcommand
