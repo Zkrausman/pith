@@ -1,5 +1,9 @@
 # Wiki Update Log
 
+## 2026-10-06
+
+- Added a source-reviewed [output-fidelity regression roadmap](../../docs/output-fidelity-regressions.md), based on commit `6939184b197085c2e3d2dd484e169123fb7a70c6`. Priorities cover CLI exit codes, child-stream fidelity, late failures, complete inventories/counts, honest omissions, raw passthrough, and unsupported parser output. Existing Jest `total` summaries are recognized; successful empty Git porcelain output has valid command semantics. Proposed cases remain unexecuted and implementation is pending.
+
 ## 2026-09-16
 
 - **retro**: {"category":"release","slug":"pith-windows-gcc-emutls-release-failure","title":"Windows GCC emutls release failure"}
