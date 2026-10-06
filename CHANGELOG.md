@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-10-06
+### Removed
+- Remove the Thneed parser and diagnostic context lookup so Pith no longer requires the external Thneed executable.
+- Remove obsolete Thneed-specific agent requirements while retaining package README Mermaid architecture standards.
+
 ## [2.4.8] - 2026-09-17
 ### Fixed
 - Verify draft release assets through the release's immutable numeric ID rather than the public by-tag endpoint, which returns 404 for drafts. Tests model that endpoint restriction and reject invalid release IDs.

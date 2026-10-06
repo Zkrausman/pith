@@ -20,7 +20,7 @@ func TestMatchCommand(t *testing.T) {
 		{"Full path Linux", "/usr/bin/npx", "npx", true},
 		{"Full path Windows", `C:\Program Files\nodejs\npx.cmd`, "npx", true},
 		{"Full path Windows mix", `C:/Program Files/nodejs/npx.exe`, "npx", true},
-		{"Local path Windows", `.\thneed.exe`, "thneed", true},
+		{"Local path Windows", `.\other-tool.exe`, "other-tool", true},
 		{"Local path Unix", `./snag`, "snag", true},
 		{"Mismatch", "ls", "npx", false},
 		{"Partial match prefix", "npx-cli", "npx", false},

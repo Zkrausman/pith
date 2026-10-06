@@ -1,10 +1,6 @@
 # Mandatory Project Instructions
 
-This project follows the GraphRAG-Aware Architectural Standard.
-
-## Research Protocol
-- AI agents should use `thneed query` before major bug fixes or architectural refactors.
-- Consult the `thneed-navigator` skill for query depth and impact analysis.
+This project follows the package README and Mermaid architecture documentation standard.
 
 ## Documentation and Tracking
 - Track work in **Linear** (`GeneralAiDev` / AIDEV).

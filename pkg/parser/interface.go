@@ -73,7 +73,6 @@ func GetAllParsers() []Parser {
 		&VitestParser{},
 		&BDParser{},
 		&PromptfooParser{},
-		&ThneedParser{},
 		&SnagParser{},
 		&NodeParser{},
 		&NPMParser{},

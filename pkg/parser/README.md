@@ -6,14 +6,12 @@ This package contains all specialized optimizers (parsers) that compress termina
 graph TD
     Interface["Parser Interface [pkg/parser/interface.go]"]
     Git["GitParsers [pkg/parser/git.go]"]
-    Thneed["ThneedParser [pkg/parser/thneed.go]"]
     NPM["NPMParser [pkg/parser/npm.go]"]
     Node["NodeParser [pkg/parser/node.go]"]
     FS["FS/LS Parser [pkg/parser/fs.go]"]
     GitHub["GitHubParser [pkg/parser/infra.go]"]
     
     Interface <|-- Git
-    Interface <|-- Thneed
     Interface <|-- NPM
     Interface <|-- Node
     Interface <|-- FS
@@ -142,14 +140,6 @@ graph TD
     e__repos_pith_pkg_parser_text_test_go["[MODULE] /repos/pith/pkg/parser/text_test.go [text_test.go]"]
     e__repos_pith_pkg_parser_text_test_go_testgrepparser["[FUNCTION] testgrepparser [text_test.go]"]
     e__repos_pith_pkg_parser_text_test_go_testminifyparser["[FUNCTION] testminifyparser [text_test.go]"]
-    e__repos_pith_pkg_parser_thneed_go["[MODULE] /repos/pith/pkg/parser/thneed.go [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_parseplain["[FUNCTION] parseplain [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_thneedparser["[STRUCT] thneedparser [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_name["[FUNCTION] name [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_canparse["[FUNCTION] canparse [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_parse["[FUNCTION] parse [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_parsejson["[FUNCTION] parsejson [thneed.go]"]
-    e__repos_pith_pkg_parser_thneed_go_parsejsonobject["[FUNCTION] parsejsonobject [thneed.go]"]
     e__repos_pith_pkg_parser_vitest_go["[MODULE] /repos/pith/pkg/parser/vitest.go [vitest.go]"]
     e__repos_pith_pkg_parser_vitest_go_canparse["[FUNCTION] canparse [vitest.go]"]
     e__repos_pith_pkg_parser_vitest_go_parse["[FUNCTION] parse [vitest.go]"]
@@ -847,65 +837,13 @@ graph TD
     e__repos_pith_pkg_parser_text_test_go ==>|contains| e__repos_pith_pkg_parser_text_test_go_testgrepparser
     e__repos_pith_pkg_parser_text_test_go ==>|contains| e__repos_pith_pkg_parser_text_test_go_testminifyparser
     encoding_json[["[EXTERNAL] json"]]
-    e__repos_pith_pkg_parser_thneed_go -.->|imports|  encoding_json
-    e__repos_pith_pkg_parser_thneed_go -.->|imports|  fmt
-    e__repos_pith_pkg_parser_thneed_go -.->|imports|  strings
-    e__repos_pith_pkg_parser_thneed_go_canparse -->|calls| matchcommand
     unmarshal[["[EXTERNAL] unmarshal"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| unmarshal
     json_unmarshal[["[EXTERNAL] json.unmarshal"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| json_unmarshal
     parsejson[["[EXTERNAL] parsejson"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| parsejson
-    t_parsejson[["[EXTERNAL] t.parsejson"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| t_parsejson
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| sprintf
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| fmt_sprintf
     parsejsonobject[["[EXTERNAL] parsejsonobject"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| parsejsonobject
-    t_parsejsonobject[["[EXTERNAL] t.parsejsonobject"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| t_parsejsonobject
     parseplain[["[EXTERNAL] parseplain"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| parseplain
-    t_parseplain[["[EXTERNAL] t.parseplain"]]
-    e__repos_pith_pkg_parser_thneed_go_parse -->|calls| t_parseplain
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| len
     writestring[["[EXTERNAL] writestring"]]
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| writestring
-    sb_writestring[["[EXTERNAL] sb.writestring"]]
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| sb_writestring
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| sprintf
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| fmt_sprintf
     lastindex[["[EXTERNAL] lastindex"]]
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| lastindex
-    strings_lastindex[["[EXTERNAL] strings.lastindex"]]
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| strings_lastindex
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| trimspace
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| strings_trimspace
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| replaceall
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| strings_replaceall
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| string
-    sb_string[["[EXTERNAL] sb.string"]]
-    e__repos_pith_pkg_parser_thneed_go_parsejson -->|calls| sb_string
-    e__repos_pith_pkg_parser_thneed_go_parsejsonobject -->|calls| sprintf
-    e__repos_pith_pkg_parser_thneed_go_parsejsonobject -->|calls| fmt_sprintf
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| split
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| strings_split
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| trimspace
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| strings_trimspace
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| hasprefix
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| strings_hasprefix
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| append
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| len
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| join
-    e__repos_pith_pkg_parser_thneed_go_parseplain -->|calls| strings_join
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_parseplain
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_thneedparser
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_name
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_canparse
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_parse
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_parsejson
-    e__repos_pith_pkg_parser_thneed_go ==>|contains| e__repos_pith_pkg_parser_thneed_go_parsejsonobject
     e__repos_pith_pkg_parser_vitest_go -.->|imports|  fmt
     e__repos_pith_pkg_parser_vitest_go -.->|imports|  strings
     e__repos_pith_pkg_parser_vitest_go_canparse -->|calls| matchcommand
