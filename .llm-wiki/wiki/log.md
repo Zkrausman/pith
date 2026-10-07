@@ -1,5 +1,9 @@
 # Wiki Update Log
 
+## 2026-10-07
+
+- Preserve normal numeric child exit statuses at `main.go`'s process boundary using `errors.As`, including wrapped exit errors. Generic CLI failures and Unix signal termination retain status 1; no signal forwarding, parser, stream, telemetry, or startup policy changes. Regression fixtures compile the shipped `main.go` entrypoint and a deterministic helper, exercise normal/raw routes with statuses 0, 1, 2, 7, 42, and 127, and keep configuration and databases synthetic. Linux full tests and Windows focused CLI tests validate the change in CI. Patch version: v3.0.1; no release or installation is implied.
+
 ## 2026-10-06
 
 - Linked the public [EmbeddingGemma 2 feasibility proposal](https://github.com/Zkrausman/Squire/blob/3335ba528b9af884c9ff17c6e6af40c43579a46e/docs/proposals/embedding-gemma-integration.md) from the roadmap and knowledge index. Offline-only experiment scope, explicit sample permission and output-fidelity prerequisites remain proposed; no implementation, inference or benchmark was performed.

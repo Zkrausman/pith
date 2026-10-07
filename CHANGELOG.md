@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-10-07
+### Fixed
+- Preserve a wrapped command's normal numeric exit status at the CLI boundary, including silent failures and failures with success-looking output. Generic CLI errors and signal termination retain status 1; output handling and shell semantics are unchanged.
+- Exercise compiled CLI exit-status regressions on Linux and Windows without model calls or external command dependencies.
+
 ## [3.0.0] - 2026-10-06
 ### Removed
 - Remove the Thneed parser and diagnostic context lookup so Pith no longer requires the external Thneed executable.
