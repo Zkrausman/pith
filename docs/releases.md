@@ -106,22 +106,30 @@ manifest signature does not directly cover the SBOM or every release asset.
 
 The publisher performs these steps in order:
 
-1. Validate repository/tag syntax and exactly six nonempty regular local files
-   (no symlinks). Compute each file's size and SHA-256; require a valid,
-   duplicate-free manifest matching exactly the three binary digests.
-2. Create a **new draft** with the existing tag verified and generated notes.
+1. Validate repository/canonical tag syntax and read exactly
+   `docs/release-notes/<tag>.md` under the checked-out repository. Require a
+   nonempty regular nonsymlink UTF-8 file, real nonsymlink parent directories,
+   first line exactly `# Pith <tag>`, and nonblank content after that heading.
+   Preserve the exact reviewed text, including newlines. Missing or invalid
+   notes fail before any remote call. Also validate exactly six nonempty regular
+   local assets (no symlinks). Compute each file's size and SHA-256; require a
+   valid, duplicate-free manifest matching exactly the three binary digests.
+2. Create a **new draft** with the existing tag verified and the reviewed text
+   supplied explicitly through `--notes`, without generated notes or shell
+   interpolation. Notes stay outside `dist`; they are not a seventh asset.
    Creation failure stops the process; it does not adopt an existing release.
 3. Upload one asset at a time: macOS binary, Linux binary, Windows binary,
    checksums, signature, SBOM. There is no publisher retry loop or `--clobber`.
 4. Resolve the draft through `gh release view` to a positive integer
    `databaseId`. Read `repos/{owner}/{repo}/releases/{release_id}` through REST.
-5. Require the expected tag and draft state, exact asset names and count, every
+5. Require the expected tag and draft state, exact body equality with reviewed
+   notes, exact asset names and count, every
    asset in `uploaded` state, and sizes and `sha256:` digest metadata matching
    the local files for **all six assets**. This compares GitHub's metadata; the
    publisher does not re-download assets; the earlier workflow test has already
    cryptographically verified the local manifest signature.
 6. Set the release public and latest, then repeat the same verification through
-   the same numeric-ID endpoint, now requiring public state. Only then report
+   the same numeric-ID endpoint, now requiring public state and the same exact notes body. Only then report
    `Published verified release <tag>`.
 
 These checks fail closed before publication on detected mismatches. They do
@@ -145,7 +153,7 @@ not absent. A tag's existence also does not prove a release exists.
 | --- | --- |
 | Build/preparation | Inspect test/native build logs, including DuckDB/CGo linking. If builds passed, distinguish artifact collection, SBOM generation, signing, or artifact-retention failures. Publication has not been reached; confirm whether any release exists rather than assuming. Do not expose signing secrets. |
 | Upload/service | Identify draft creation, the last attempted upload, ID lookup, API read, or public-state edit as the failed operation. Preserve HTTP/service errors and observed state: there may be no draft, an empty/partial draft, a complete draft, or a public release if the edit took effect before an error. A complete upload alone does not prove verification passed. Do not rerun or clobber. |
-| Verification | Compare the retained local set with observed tag/state, names/count, upload states, sizes, and digests. Local validation fails before network calls; pre-publication remote mismatch stops publication. A post-publication mismatch or API failure can leave the release public; do not describe every failure as draft-only or install it as a verified success. Escalate without manual publication recovery. |
+| Verification | Compare the reviewed notes and retained local set with observed body, tag/state, names/count, upload states, sizes, and digests. Local validation fails before network calls; pre-publication remote mismatch stops publication. A post-publication mismatch or API failure can leave the release public; do not describe every failure as draft-only or install it as a verified success. Escalate without manual publication recovery. |
 | Installation | Treat as a separately authorized operation, not evidence that publication failed. Distinguish unsupported/missing platform assets, duplicate required assets, network/download failures, signature/checksum rejection, and filesystem replacement/rollback errors. Record the updater result and observed version; never substitute an unchecked binary or bypass signature/asset checks. |
 
 ### Evidence to retain
@@ -154,6 +162,7 @@ Use sanitized diagnostics, not raw environment dumps:
 
 - Workflow/run reference, failed job/step, tag, and source commit.
 - Numeric release ID if known, observed draft/public/unknown state, and when observed.
+- Reviewed version-specific notes and whether the observed release body matches exactly.
 - Expected and observed asset names, counts, upload states, sizes, and SHA-256 digests.
 - Relevant error/status output and retained `signed-release-<tag>` artifact identity
   (or the step that prevented its creation); preserve permitted evidence before expiry.
@@ -183,7 +192,10 @@ installation authorization.
 
 Before authorizing the first v3 tag, review cumulative notes from the last public
 v2.4.8 release, not just the latest patch. Generated PR-title notes are insufficient
-for this major migration. Include the removal of the Thneed parser/exported Go
+for this major migration. Commit the reviewed cumulative body in
+`docs/release-notes/<tag>.md` before the tag; the publisher requires and verifies
+it at draft creation and both numeric-ID verification points. Never race-edit an
+external draft or pre-create a release for this publisher. Include the removal of the Thneed parser/exported Go
 type and Thneed diagnostic enrichment (without claiming a replacement retrieval
 engine), preserved normal child exit statuses, and explicit raw output semantics:
 all captured stdout followed by stderr, without parsing or truncation, not
@@ -192,5 +204,6 @@ accepted patch from the final source/changelog. External diagnostics still
 require explicit permission and use Gemini; no offline diagnostic claim follows
 from removing Thneed. The updater can offer newer major versions.
 
-This validation-only change does not supply tag/publication authorization,
+The notes delivery and validation automation does not supply tag/publication authorization,
 change the production version, or claim a signed/public v3 release exists.
+
