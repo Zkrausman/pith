@@ -186,6 +186,21 @@ func TestCLIExitStatus(t *testing.T) {
 			}
 		}
 	})
+	t.Run("normal-failure-output", func(t *testing.T) {
+		prepareStorage(t)
+		input := strings.Repeat("ordinary progress\n", 600) + "All checks passed\n"
+		diagnostic := "\n" + strings.Repeat("expected/received context 雪\n", 300) + "checkout.test.ts:42:7\nTests: 1 failed, 24 passed, 25 total\n\n"
+		t.Setenv("PITH_TEST_RAW_STDOUT", input)
+		t.Setenv("PITH_TEST_RAW_STDERR", diagnostic)
+		stdout, stderr := runCLI(t, 42, "--", helper, "42", "raw-output")
+		if stdout != input+diagnostic {
+			t.Fatalf("normal failure output changed: got %d bytes, want %d", len(stdout), len(input+diagnostic))
+		}
+		if !strings.Contains(stderr, "Error: exit status 42") || !strings.Contains(stderr, "Usage:") {
+			t.Fatalf("missing existing Cobra diagnostics: %q", stderr)
+		}
+	})
+
 	t.Run("normal-output-still-truncated", func(t *testing.T) {
 		storage := prepareStorage(t)
 		data, err := json.Marshal(map[string]any{

@@ -184,7 +184,8 @@ func (r *Runner) selectParserWithReason(command string) (parser.Parser, telemetr
 	return nil, telemetry.DecisionUnsupportedParser
 }
 
-// RunWithOptions can skip parsers while retaining the normal truncation policy.
+// RunWithOptions can skip parsers while retaining successful-command truncation.
+// Execution failures preserve captured output without parsing or truncation.
 func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 	return r.run(args, runOptions{skipParsing: skipParsing})
 }
@@ -272,9 +273,13 @@ func (r *Runner) run(args []string, opts runOptions) error {
 
 	originalTokens := r.EstimateTokens(fullOutput)
 
+	// Execution errors are authoritative: parsers cannot infer success from
+	// incomplete diagnostics, and truncation can discard needed failure context.
+	// Preserve the existing captured stdout-plus-stderr representation.
+	preserveOutput := opts.raw || err != nil
 	var p parser.Parser
 	reason := telemetry.DecisionProtectedPassthrough
-	if !opts.skipParsing && !opts.raw {
+	if !opts.skipParsing && !preserveOutput {
 		p, reason = r.selectParserWithReason(fullCmd)
 	}
 
@@ -292,8 +297,8 @@ func (r *Runner) run(args []string, opts runOptions) error {
 		finalOutput = fullOutput
 	}
 
-	// Only explicit raw mode bypasses the independent truncation policy.
-	if !opts.raw {
+	// Raw requests and execution failures bypass the truncation policy.
+	if !preserveOutput {
 		truncated := r.ApplyMiddleOutTruncation(finalOutput)
 		if truncated != finalOutput {
 			reason = telemetry.DecisionTransformed
