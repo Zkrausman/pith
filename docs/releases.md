@@ -63,7 +63,7 @@ builds the distribution binary with `go build -trimpath ... .`. It then points
 empty, or nonregular requested path fails instead of recompiling. The smoke log
 records its SHA-256. The harness isolates HOME/USERPROFILE/PITH_STORAGE, stamps
 the update-check time, and uses a deterministic local helper without providers.
-It checks exact version/help, normal/raw statuses (including Windows 301), long
+It checks exact version and successful help, normal/raw statuses (including Windows 301), long
 combined raw output, UTF-8, final newlines, and existing failure cases before
 uploading the artifact. `-count=1` prevents a cached test from satisfying this
 artifact check. These are focused native checks, not a full Windows/macOS suite.
