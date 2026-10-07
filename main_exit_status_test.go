@@ -83,6 +83,10 @@ func TestCLIExitStatus(t *testing.T) {
 		t.Fatalf("build helper: %v\n%s", err, out)
 	}
 
+	t.Run("parser-fallback-evidence", func(t *testing.T) {
+		testCLIParserFallbacks(t, binary, helper)
+	})
+
 	prepareStorage := func(t *testing.T) string {
 		t.Helper()
 		storage := t.TempDir()

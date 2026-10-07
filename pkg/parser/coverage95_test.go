@@ -437,10 +437,10 @@ func TestTestParser_AllBranches(t *testing.T) {
 		t.Error("Expected go build NOT to match TestParser")
 	}
 
-	// Empty results -> fallback message
+	// Unrecognized output must not invent a completion message.
 	output := p.Parse("nothing here")
-	if output != "Tests finished. (No summary captured)" {
-		t.Errorf("Expected fallback message, got %s", output)
+	if output != "nothing here" {
+		t.Errorf("Expected original output, got %q", output)
 	}
 
 	// FAIL block

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.5] - 2026-10-07
+
+### Fixed
+- Preserve empty and unsupported Git, test, and coverage captures instead of manufacturing success, test completion, or aggregate 100% coverage. Git output without recognized human-readable context keeps its original whitespace, including empty machine-readable status output; this does not infer clean whole-worktree state.
+- Keep structured-looking complete or malformed JSON captures intact in those line-oriented parsers, rather than extracting apparent summaries. Pi fallback results retain passthrough provenance and mandatory redaction. Recognized human summaries, existing truncation limits, numeric exit status, and surface-specific privacy policies remain unchanged.
+
 ## [3.0.4] - 2026-10-07
 
 ### Fixed
