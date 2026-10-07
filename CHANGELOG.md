@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.8] - 2026-10-07
+
+### Fixed
+- Compact complete JSON without decoding numbers through floating point or replacing large objects with key-only summaries. Preserve numeric spelling, quoted whitespace, escapes, duplicate keys, and all values in MinifyParser and WebParser output.
+- Preserve malformed JSON-looking captures and binary data conservatively. MinifyParser leaves non-JSON formats unchanged; WebParser retains its explicitly labelled HTML and long plain-text summaries and their established limits. HTML with inline JSON remains eligible for those summaries, while malformed JSON containing HTML text does not.
+- Keep existing parser selection, raw/error handling, stream capture, caller truncation, telemetry, and Pi redaction contracts unchanged. This fixes the selected parsers, not every file-reading invocation.
+
 ## [3.0.7] - 2026-10-07
 
 ### Fixed
