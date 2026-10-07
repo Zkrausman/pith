@@ -83,6 +83,8 @@ func TestCLIExitStatus(t *testing.T) {
 		t.Fatalf("build helper: %v\n%s", err, out)
 	}
 
+	t.Run("du-path-fidelity", func(t *testing.T) { testCLIDuPathFidelity(t, binary, helper) })
+
 	t.Run("parser-fallback-evidence", func(t *testing.T) {
 		testCLIParserFallbacks(t, binary, helper)
 	})
