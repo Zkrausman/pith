@@ -48,7 +48,7 @@ func TestCompositeGitIncompleteRecordsPreserved(t *testing.T) {
 }
 
 func TestGitShowNonCommitPreserved(t *testing.T) {
-	p := fallbackParserFor(t, "git show HEAD:fixture", "git_show")
+	p := fallbackParserFor(t, "git show", "git_show")
 	for _, input := range []string{"", " \t\r\n", "On branch main\n", "index retained\n", "@@ literal\n", "\x1b[31mblob text\x1b[0m\n", "{\n  \"commit\":", "tag fixture\nTagger: Example\n\n" + compositeCommit} {
 		if got := p.Parse(input); got != input {
 			t.Errorf("non-commit capture changed: got %q, want %q", got, input)
@@ -98,6 +98,24 @@ func TestCompositeGitRegistrySelection(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("no parser selected for %q", command)
+		}
+	}
+}
+
+func TestGitShowObjectSelectorsSkipRegistry(t *testing.T) {
+	for _, args := range [][]string{{"show", "0123456789abcdef0123456789abcdef01234567"}, {"show", "blob-tag"}, {"show", "--stat"}, {"show", "HEAD:fixture"}, {"show", ":fixture"}, {"show", ":0:fixture"}, {"show", "HEAD", "HEAD:fixture"}} {
+		for _, p := range GetAllParsers() {
+			if p.CanParse("git", args) {
+				t.Errorf("blob selector %q selected %s", args, p.Name())
+			}
+		}
+	}
+}
+
+func TestGitShowHeadSelection(t *testing.T) {
+	for _, args := range [][]string{{"show"}, {"show", "HEAD"}, {"-C", "fixture", "show"}, {"-c", "color.ui=false", "show", "HEAD"}} {
+		if !(&GitShowParser{}).CanParse("git", args) {
+			t.Errorf("HEAD command not selected: %q", args)
 		}
 	}
 }

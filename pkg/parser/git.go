@@ -273,7 +273,17 @@ type GitShowParser struct {
 
 func (g *GitShowParser) Name() string { return "git_show" }
 func (g *GitShowParser) CanParse(cmd string, args []string) bool {
-	return cmd == "git" && getGitSubcommand(args) == "show"
+	if cmd != "git" || getGitSubcommand(args) != "show" {
+		return false
+	}
+	// Arbitrary object selectors can name blobs whose contents look exactly
+	// like commits. Without an object lookup, support only the default HEAD.
+	for i, arg := range args {
+		if arg == "show" {
+			return i == len(args)-1 || (i == len(args)-2 && args[i+1] == "HEAD")
+		}
+	}
+	return false
 }
 func (g *GitShowParser) Parse(output string) string {
 	// show can return arbitrary blob contents or annotated tags. Only a

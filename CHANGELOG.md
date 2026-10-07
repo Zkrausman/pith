@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Preserve the complete captured output when composite Git or `git show` commit records are incomplete or unsupported, instead of panicking on shortened dates or inventing partial summaries. Only complete default-format single-subject records are condensed; multiline messages, merge metadata, signatures, alternate formats, and unsupported section boundaries remain intact.
-- Keep non-commit `git show` captures such as blobs and annotated tags unchanged. Pi fallback provenance and mandatory redaction remain intact; supported simple commit/diff compression and GitStatus inventories are unchanged.
+- Keep non-commit-shaped `git show` captures such as ordinary blobs and annotated tags unchanged, and limit GitShow dispatch to default `git show` / `git show HEAD`; other selectors/options pass through because object type cannot be established without a lookup. Pi fallback provenance and mandatory redaction remain intact; supported simple commit/diff compression and GitStatus inventories are unchanged.
 
 ## [3.0.5] - 2026-10-07
 

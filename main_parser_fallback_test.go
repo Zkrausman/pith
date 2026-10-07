@@ -61,6 +61,8 @@ func testCLIParserFallbacks(t *testing.T, binary, helper string) {
 		{"empty-status", "git status", ""},
 		{"show-short-date", "git show", "commit 0123456789abcdef0123456789abcdef01234567\nAuthor: Example <example@example.invalid>\nDate:   Sun Mar 15\n\n    Subject\n"},
 		{"show-incomplete", "git show", "commit abc1234\n\n"},
+		{"show-opaque-object", "git show 0123456789abcdef0123456789abcdef01234567", "commit 0123456789abcdef0123456789abcdef01234567\nAuthor: Example <example@example.invalid>\nDate:   Sun Mar 15 22:49:38 2026 -0400\n\n    Subject\n"},
+		{"show-commit-shaped-blob", "git show HEAD:fixture", "commit 0123456789abcdef0123456789abcdef01234567\nAuthor: Example <example@example.invalid>\nDate:   Sun Mar 15 22:49:38 2026 -0400\n\n    Subject\n"},
 		{"show-blob", "git show HEAD:fixture", "On branch main\nindex literal content\n@@ retained\n"},
 		{"empty-porcelain", "git status --porcelain=v1", ""},
 		{"empty-add", "git add fixture", ""},
