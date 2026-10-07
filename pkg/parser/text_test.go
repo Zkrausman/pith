@@ -37,13 +37,9 @@ func TestMinifyParser(t *testing.T) {
 	}
 
 	output := p.Parse(input)
-	if strings.Contains(output, "//") {
-		t.Error("Minified output should not contain comments")
-	}
-	if !strings.Contains(output, "\n") {
-		t.Error("Balanced minification should preserve some newlines for readability")
-	}
-	if strings.Contains(output, "  ") {
-		t.Error("Minified output should have collapsed indentation")
+	// Comments are not valid JSON; retain every captured byte rather than
+	// inventing a repaired document or changing quoted whitespace.
+	if output != input {
+		t.Errorf("malformed JSON must pass through unchanged: got %q, want %q", output, input)
 	}
 }

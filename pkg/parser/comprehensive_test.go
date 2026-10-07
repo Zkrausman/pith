@@ -22,11 +22,12 @@ func TestParsersCanParse(t *testing.T) {
 func TestWebParser_Edge(t *testing.T) {
 	p := &WebParser{}
 
-	// JSON with keys
+	// Large JSON retains all keys and values, not just a key summary.
 	largeJSON := `{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8, "i": 9, "j": 10, "k": 11, "l": 12, "m": 13, "n": 14, "o": 15, "p": 16, "q": 17, "r": 18, "s": 19, "t": 20, "u": 21, "v": 22, "w": 23, "x": 24, "y": 25, "z": 26, "long": "this is a very long string to make the json large enough to trigger the key summary branch if it was over 500 chars total minified........................................................................................................................................................................................................................................................................................................................................................................................................................................"}`
 	output := p.Parse(largeJSON)
-	if !strings.Contains(output, "JSON Object Keys") {
-		t.Errorf("Expected JSON Object Keys summary, got %s", output)
+	wantJSON := `{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11,"l":12,"m":13,"n":14,"o":15,"p":16,"q":17,"r":18,"s":19,"t":20,"u":21,"v":22,"w":23,"x":24,"y":25,"z":26,"long":"this is a very long string to make the json large enough to trigger the key summary branch if it was over 500 chars total minified........................................................................................................................................................................................................................................................................................................................................................................................................................................"}`
+	if output != wantJSON {
+		t.Errorf("large JSON lost content: got %q, want %q", output, wantJSON)
 	}
 
 	// HTML with title
