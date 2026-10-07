@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.6] - 2026-10-07
+
+### Fixed
+- Preserve the complete captured output when composite Git or `git show` commit records are incomplete or unsupported, instead of panicking on shortened dates or inventing partial summaries. Only complete default-format single-subject records are condensed; multiline messages, merge metadata, signatures, alternate formats, and unsupported section boundaries remain intact.
+- Keep non-commit-shaped `git show` captures such as ordinary blobs and annotated tags unchanged, and limit GitShow dispatch to default `git show` / `git show HEAD`; other selectors/options pass through because object type cannot be established without a lookup. Pi fallback provenance and mandatory redaction remain intact; supported simple commit/diff compression and GitStatus inventories are unchanged.
+
 ## [3.0.5] - 2026-10-07
 
 ### Fixed
