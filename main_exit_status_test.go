@@ -132,6 +132,66 @@ func TestCLIExitStatus(t *testing.T) {
 			}
 		}
 	}
+	t.Run("raw-output", func(t *testing.T) {
+		longOutput := strings.Repeat("ordinary line\n", 600) + "All checks passed\n\n"
+		for _, tc := range []struct {
+			name   string
+			stdout string
+			stderr string
+		}{
+			{name: "empty"},
+			{name: "unterminated-utf8", stdout: "雪 café 🙂"},
+			{name: "trailing-newlines", stdout: "α\nβ\n\n\n"},
+			{name: "above-default-limit", stdout: longOutput},
+			{name: "above-default-limit-stderr", stderr: longOutput},
+			{name: "combined-without-separator", stdout: "{\"artifact\":\"fixture\"}", stderr: "warning: synthetic diagnostic\n\n"},
+		} {
+			for _, code := range []int{0, 42} {
+				t.Run(fmt.Sprintf("%s/%d", tc.name, code), func(t *testing.T) {
+					prepareStorage(t)
+					t.Setenv("PITH_TEST_RAW_STDOUT", tc.stdout)
+					t.Setenv("PITH_TEST_RAW_STDERR", tc.stderr)
+					stdout, stderr := runCLI(t, code, "raw", "--", helper, strconv.Itoa(code), "raw-output")
+					if want := tc.stdout + tc.stderr; stdout != want {
+						t.Fatalf("raw output = %q, want %q", stdout, want)
+					}
+					if code == 0 && stderr != "" {
+						t.Fatalf("unexpected CLI diagnostic: %q", stderr)
+					}
+					if code != 0 && (!strings.Contains(stderr, fmt.Sprintf("Error: exit status %d", code)) || !strings.Contains(stderr, "Usage:")) {
+						t.Fatalf("missing existing Cobra diagnostics: %q", stderr)
+					}
+				})
+			}
+		}
+	})
+	t.Run("normal-output-still-truncated", func(t *testing.T) {
+		storage := prepareStorage(t)
+		data, err := json.Marshal(map[string]any{
+			"last_update_check": time.Now().Unix(),
+			"max_lines":         5,
+			"head_lines":        2,
+			"tail_lines":        2,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(storage, "config.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		input := "head1\nhead2\nordinary3\nordinary4\nordinary5\nordinary6\ntail7\ntail8"
+		t.Setenv("PITH_TEST_RAW_STDOUT", input)
+		t.Setenv("PITH_TEST_RAW_STDERR", "")
+		stdout, stderr := runCLI(t, 0, "--", helper, "0", "raw-output")
+		want := "head1\nhead2\n\n... [4 lines removed by Pith middle-out truncation] ...\n\ntail7\ntail8"
+		if stdout != want || stderr != "" {
+			t.Fatalf("normal output = %q, stderr = %q; want %q", stdout, stderr, want)
+		}
+		stdout, stderr = runCLI(t, 0, "raw", "--", helper, "0", "raw-output")
+		if stdout != input || stderr != "" {
+			t.Fatalf("raw output = %q, stderr = %q; want %q", stdout, stderr, input)
+		}
+	})
 	t.Run("wrapped-child-error", func(t *testing.T) {
 		err := exec.Command(helper, "42", "silent").Run()
 		if got := exitCode(fmt.Errorf("wrapped: %w", err)); got != 42 {

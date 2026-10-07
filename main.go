@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-const version = "v3.0.1"
+const version = "v3.0.2"
 
 type HookInput struct {
 	ToolResponse struct {
@@ -157,7 +157,7 @@ func NewRootCmd() *cobra.Command {
 
 	var rawCmd = &cobra.Command{
 		Use:   "raw [command]",
-		Short: "Run a command and bypass all parsers (escape hatch)",
+		Short: "Run a command without parsing or truncation (escape hatch)",
 		RunE:  runRaw,
 	}
 
@@ -778,7 +778,7 @@ func runRaw(cmd *cobra.Command, args []string) error {
 	}
 	defer tel.Close()
 	run := runner.NewRunner(cfg, tel)
-	return run.RunWithOptions(args, true)
+	return run.RunRaw(args)
 }
 
 func runDashboard(cmd *cobra.Command, args []string) error {

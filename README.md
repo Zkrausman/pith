@@ -11,7 +11,7 @@
 - **Reasoning Over Brevity Standard:** Built-in mandate that prioritizes comprehensive technical depth over brevity to prevent LLM intelligence loss.
 - **Configurable Storage:** Telemetry and configuration are stored locally under `~/.pith` by default (or `PITH_STORAGE_PATH` if set).
 - **Composite Commands:** Intelligent handling of shell-joined commands (e.g., `git status & git log`).
-- **Escape Hatch (`pith raw`):** Bypass all parsers when you need the exact, unformatted truth.
+- **Escape Hatch (`pith raw`):** Bypass parsers and truncation for complete captured output.
 - **Middle-Out Truncation:** Automatically keep the start and end of massive outputs, removing the redundant middle.
 - **Multi-LLM Integration:** Automated hook setup for Antigravity 2.0, Antigravity CLI, Gemini CLI, Claude Code, Codex, and Pi.
 - **Telemetry & Discovery:** Tracks exact token savings and identifies new optimization targets.
@@ -39,13 +39,13 @@ If you only want to install hooks for a specific CLI or only for the current pro
 - **Full Global Sync:** Use `pith install` to ensure all system-wide hooks and settings are up-to-date.
 
 ### 2. The Escape Hatch (`pith raw`)
-If a parser is being too aggressive and you need to see the raw, bit-for-bit output of a command, prefix it with `raw`:
+If a parser or truncation is hiding output you need, prefix the command with `raw`:
 ```bash
 pith raw git diff
 ```
-This bypasses all logic and returns the original system output. 
+This bypasses all parsers and Pith's head/tail/hot-zone truncation, even above `MaxLines`. It writes the complete captured stdout followed by the complete captured stderr to Pith's stdout, preserving their bytes, including trailing newlines, without inserting a separator. It retains the command's normal numeric exit status. This is combined output: the original stream destinations and interleaving are not preserved, and Pith's own CLI error/usage diagnostics can still appear on stderr. Configuration and telemetry behavior are unchanged.
 
-> **Note:** This is intended as a **temporary workaround**. If a specific parser consistently causes issues, you can permanently disable it using the **Parsers Page** in `pith config`.
+> **Note:** This is intended as a **temporary workaround**. If a specific parser consistently causes issues, you can permanently disable it using the **Parsers Page** in `pith config`. Disabling a parser still leaves normal truncation enabled; only explicit `pith raw` bypasses both.
 
 ### 3. Middle-Out Truncation
 When a command returns thousands of lines (like a massive log file), Pith prevents context overflow by keeping the most important parts: the **beginning** (setup/context) and the **end** (errors/results).

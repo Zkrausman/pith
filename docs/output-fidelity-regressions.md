@@ -4,6 +4,8 @@ Status: proposed implementation roadmap. This documentation does not change ship
 
 Source baseline: [Zkrausman/pith, commit 6939184b197085c2e3d2dd484e169123fb7a70c6][baseline], inspected 2026-10-06. Implementation descriptions below refer to that pinned commit. These are source-derived acceptance cases, not executed reproductions or measured performance results.
 
+Implementation progress (2026-10-07): normal numeric CLI exit status is covered by v3.0.1. In v3.0.2, explicit `pith raw` bypasses parsing and truncation and preserves the complete captured stdout-plus-stderr bytes, with runner and compiled-entrypoint regressions. This completes only the raw truncation-bypass portion of addition 4. The stricter independent-stream contract in addition 2, omission accounting, and other proposed changes below remain pending. The pinned baseline observations below remain historical.
+
 ## Goal and scope
 
 A software-delivery agent must be able to distinguish failure, incomplete evidence, and successful completion after compression. Token reduction is secondary to preserving the facts needed to decide whether to inspect, retry, fix, or finish.

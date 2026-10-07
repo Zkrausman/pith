@@ -25,6 +25,9 @@ func main() {
 	case "streams":
 		fmt.Fprintln(os.Stdout, "All checks passed")
 		fmt.Fprintln(os.Stderr, "diagnostic marker")
+	case "raw-output":
+		fmt.Fprint(os.Stdout, os.Getenv("PITH_TEST_RAW_STDOUT"))
+		fmt.Fprint(os.Stderr, os.Getenv("PITH_TEST_RAW_STDERR"))
 	case "kill":
 		process, err := os.FindProcess(os.Getpid())
 		if err != nil || process.Kill() != nil {
