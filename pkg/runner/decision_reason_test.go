@@ -48,6 +48,7 @@ func TestRunnerDecisionReasons(t *testing.T) {
 		{name: "accepted", supported: true, want: telemetry.DecisionTransformed},
 		{name: "accepted-no-op", supported: true, noOp: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-unsupported", truncate: true, want: telemetry.DecisionTransformed},
+		{name: "truncate-disabled", supported: true, disabled: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-protected", protected: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-skip", skip: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-parser", supported: true, truncate: true, want: telemetry.DecisionTransformed},

@@ -184,7 +184,23 @@ func (r *Runner) selectParserWithReason(command string) (parser.Parser, telemetr
 	return nil, telemetry.DecisionUnsupportedParser
 }
 
+// RunWithOptions can skip parsers while retaining the normal truncation policy.
 func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
+	return r.run(args, runOptions{skipParsing: skipParsing})
+}
+
+// RunRaw preserves the complete captured stdout-plus-stderr output, without
+// parsing or truncation. It does not preserve independent stream routing.
+func (r *Runner) RunRaw(args []string) error {
+	return r.run(args, runOptions{raw: true})
+}
+
+type runOptions struct {
+	skipParsing bool
+	raw         bool
+}
+
+func (r *Runner) run(args []string, opts runOptions) error {
 	if len(args) == 0 {
 		return fmt.Errorf("no command provided")
 	}
@@ -258,7 +274,7 @@ func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 
 	var p parser.Parser
 	reason := telemetry.DecisionProtectedPassthrough
-	if !skipParsing {
+	if !opts.skipParsing && !opts.raw {
 		p, reason = r.selectParserWithReason(fullCmd)
 	}
 
@@ -276,12 +292,14 @@ func (r *Runner) RunWithOptions(args []string, skipParsing bool) error {
 		finalOutput = fullOutput
 	}
 
-	// Apply Middle-Out Truncation
-	truncated := r.ApplyMiddleOutTruncation(finalOutput)
-	if truncated != finalOutput {
-		reason = telemetry.DecisionTransformed
+	// Only explicit raw mode bypasses the independent truncation policy.
+	if !opts.raw {
+		truncated := r.ApplyMiddleOutTruncation(finalOutput)
+		if truncated != finalOutput {
+			reason = telemetry.DecisionTransformed
+		}
+		finalOutput = truncated
 	}
-	finalOutput = truncated
 
 	compressedTokens := r.EstimateTokens(finalOutput)
 
