@@ -1,8 +1,10 @@
 package parser
 
 import (
-	"regexp"
+	"bytes"
+	"encoding/json"
 	"strings"
+	"unicode/utf8"
 )
 
 // GrepParser (NEW)
@@ -57,34 +59,22 @@ func (m *MinifyParser) CanParse(cmd string, args []string) bool {
 		strings.HasSuffix(file, ".html") || strings.HasSuffix(file, ".css")
 }
 
-var whitespaceRegex = regexp.MustCompile(`\s+`)
+// compactJSON preserves the lexical representation of numbers and strings,
+// including duplicate keys and escape sequences. Only insignificant JSON
+// whitespace may be removed. Other formats and incomplete captures are opaque;
+// their comments and whitespace may be meaningful and must remain untouched.
+func compactJSON(output string) (string, bool) {
+	if !utf8.ValidString(output) {
+		return output, false
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, []byte(output)); err != nil {
+		return output, false
+	}
+	return compacted.String(), true
+}
 
 func (m *MinifyParser) Parse(output string) string {
-	// Moderated minification:
-	// 1. Strip comments (simple heuristic)
-	// 2. Collapse extreme whitespace, but keep some structure if large
-	// 3. Keep first 50 and last 50 lines to avoid model confusion (middle-out is handled by runner)
-
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-
-		// Skip typical comments for common file types
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
-			strings.HasPrefix(trimmed, "<!--") || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-
-		// Collapse excessive spaces within the line
-		collapsed := whitespaceRegex.ReplaceAllString(trimmed, " ")
-		result = append(result, collapsed)
-	}
-
-	// If it's still huge, we'll let the middle-out truncation handle it,
-	// but we've at least removed the metadata/comment noise.
-	return strings.Join(result, "\n")
+	compacted, _ := compactJSON(output)
+	return compacted
 }
