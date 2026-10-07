@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,7 +76,16 @@ func TestReleaseArtifactsRejectInvalidInput(t *testing.T) {
 	if err := verifyReleaseArtifactsForTest(directory); err == nil {
 		t.Fatal("missing manifest accepted")
 	}
-	manifest := []byte("synthetic manifest\n")
+	// Every binary/hash is valid: ignoring signature verification must make the
+	// wrong-key/malformed cases succeed, which these tests explicitly reject.
+	var manifest []byte
+	for _, name := range []string{"pith-linux-amd64", "pith-windows-amd64.exe", "pith-darwin-arm64"} {
+		binary := []byte("synthetic package fixture for " + name)
+		if err := os.WriteFile(filepath.Join(directory, name), binary, 0600); err != nil {
+			t.Fatal(err)
+		}
+		manifest = append(manifest, []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(binary), name))...)
+	}
 	if err := os.WriteFile(filepath.Join(directory, "checksums.txt"), manifest, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -91,12 +101,22 @@ func TestReleaseArtifactsRejectInvalidInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, data := range [][]byte{nil, []byte("not-base64"), []byte(base64.StdEncoding.EncodeToString(signature))} {
-		if err := os.WriteFile(filepath.Join(directory, "checksums.txt.sig"), data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := verifyReleaseArtifactsForTest(directory); err == nil {
-			t.Fatal("empty, malformed, or wrong-key signature accepted")
-		}
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{name: "empty", want: "checksums.txt.sig must be a nonempty regular file"},
+		{name: "malformed", data: []byte("not-base64"), want: "decode release manifest signature"},
+		{name: "wrong-key", data: []byte(base64.StdEncoding.EncodeToString(signature)), want: "release manifest signature verification failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(directory, "checksums.txt.sig"), tc.data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyReleaseArtifactsForTest(directory); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want signature rejection containing %q", err, tc.want)
+			}
+		})
 	}
 }
