@@ -179,17 +179,32 @@ func TestCLIExitStatus(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(storage, "config.json"), data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		input := "head1\nhead2\nordinary3\nordinary4\nordinary5\nordinary6\ntail7\ntail8"
-		t.Setenv("PITH_TEST_RAW_STDOUT", input)
-		t.Setenv("PITH_TEST_RAW_STDERR", "")
-		stdout, stderr := runCLI(t, 0, "--", helper, "0", "raw-output")
-		want := "head1\nhead2\n\n... [4 lines removed by Pith middle-out truncation] ...\n\ntail7\ntail8"
-		if stdout != want || stderr != "" {
-			t.Fatalf("normal output = %q, stderr = %q; want %q", stdout, stderr, want)
-		}
-		stdout, stderr = runCLI(t, 0, "raw", "--", helper, "0", "raw-output")
-		if stdout != input || stderr != "" {
-			t.Fatalf("raw output = %q, stderr = %q; want %q", stdout, stderr, input)
+		for _, tc := range []struct {
+			input string
+			want  string
+		}{
+			{
+				input: "head1\nhead2\nordinary3\nordinary4\nordinary5\nordinary6\ntail7\ntail8",
+				want:  "head1\nhead2\n\n... [4 lines removed by Pith middle-out truncation] ...\n\ntail7\ntail8",
+			},
+			{
+				input: "head1\nhead2\nhidden3\ncontext4\nERROR failure5\ncontext6\ntail7\ntail8",
+				want:  "head1\nhead2\n\n... [1 lines of non-critical output removed by Pith] ...\n\ncontext4\nERROR failure5\ncontext6\ntail7\ntail8",
+			},
+		} {
+			for _, suffix := range []string{"", "\n"} {
+				input, want := tc.input+suffix, tc.want+suffix
+				t.Setenv("PITH_TEST_RAW_STDOUT", input)
+				t.Setenv("PITH_TEST_RAW_STDERR", "")
+				stdout, stderr := runCLI(t, 0, "--", helper, "0", "raw-output")
+				if stdout != want || stderr != "" {
+					t.Fatalf("normal output = %q, stderr = %q; want %q", stdout, stderr, want)
+				}
+				stdout, stderr = runCLI(t, 0, "raw", "--", helper, "0", "raw-output")
+				if stdout != input || stderr != "" {
+					t.Fatalf("raw output = %q, stderr = %q; want %q", stdout, stderr, input)
+				}
+			}
 		}
 	})
 	t.Run("wrapped-child-error", func(t *testing.T) {

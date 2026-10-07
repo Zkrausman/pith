@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] - 2026-10-07
+### Fixed
+- Report every omitted Middle-Out segment with its exact line count, including a single line before or between retained hot windows. Retained lines stay ordered and occur once; keyword selection, context width, and marker formats are unchanged.
+- Count a final newline as the last line's terminator rather than an extra tail line, while retaining actual blank lines and the final newline. Add deterministic boundary, exhaustive hot-window, and compiled-entrypoint regressions; explicit raw output remains byte-preserving.
+
 ## [3.0.2] - 2026-10-07
 ### Fixed
 - Make explicit `pith raw` bypass head/tail/hot-zone truncation as well as parsers, preserving the entire captured stdout-plus-stderr output above `MaxLines`. Ordinary parser bypass and disabled parsers still use normal truncation.
