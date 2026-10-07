@@ -27,9 +27,22 @@ jobs:
       - name: Test release publication safeguards
         run: python3 -m unittest discover -s .github/tests -v
 
+  native-validation-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.classify.outputs.required }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify complete old/new changed paths (fail closed)
+        id: classify
+        run: python3 .github/scripts/native_validation.py
+
   windows-link-check:
     # Exercise native DuckDB/CGo linking before a release tag is created.
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
@@ -50,8 +63,9 @@ jobs:
           ./pith.exe version
 
   build:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    # A broken/unknown gate runs packages, while the aggregate still fails it.
+    if: ${{ always() && needs.test.result == 'success' && (needs.native-validation-gate.result != 'success' || needs.native-validation-gate.outputs.required != 'false') }}
+    needs: [test, native-validation-gate]
     strategy:
       fail-fast: false
       # DuckDB bindings require native compilation. Build only on the native
@@ -76,20 +90,61 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Verify native toolchain and runtime regressions
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          test "$(go env GOHOSTOS)-$(go env GOHOSTARCH)" = "$EXPECTED_TARGET"
+          test "$(go env GOOS)-$(go env GOARCH)" = "$EXPECTED_TARGET"
+          if [ "$EXPECTED_TARGET" = darwin-arm64 ]; then
+            test "$(uname -m)" = arm64
+            sw_vers
+          fi
+          if [ "$EXPECTED_TARGET" = windows-amd64 ]; then gcc --version; fi
+          go test -count=1 ./pkg/anomaly
+          go test -count=1 -v ./pkg/runner -run '^(TestRunRawPreservesCombinedOutput|TestRunnerDecisionReasons|TestMiddleOutOmissionAccounting|TestMiddleOutOmissionCoverage)$'
       - name: Build binary
         shell: bash
         run: |
           mkdir -p dist
           go build -trimpath -o "dist/pith-${{ matrix.target }}${{ matrix.extension }}" .
+      - name: Smoke the actual distribution binary
+        shell: bash
+        env:
+          PITH_TEST_BINARY: ${{ github.workspace }}/dist/pith-${{ matrix.target }}${{ matrix.extension }}
+          PITH_TEST_RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          echo "Effective checkout SHA: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          go test -count=1 -v . -run '^(TestExitCode|TestCLIExitStatus)$'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pith-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
+  validation:
+    # Never let failed, cancelled, absent-output, or unexpectedly skipped package
+    # jobs become a successful aggregate. Docs-only is the sole build skip.
+    if: ${{ always() }}
+    needs: [test, native-validation-gate, windows-link-check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Require every applicable validation job
+        env:
+          RESULT_TEST: ${{ needs.test.result }}
+          RESULT_GATE: ${{ needs.native-validation-gate.result }}
+          RESULT_WINDOWS: ${{ needs.windows-link-check.result }}
+          RESULT_REQUIRED: ${{ needs.native-validation-gate.outputs.required }}
+          RESULT_BUILD: ${{ needs.build.result }}
+        run: python3 .github/scripts/native_validation.py aggregate
+
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [build, validation]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -116,6 +171,10 @@ jobs:
           sha256sum pith-* > checksums.txt
           go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
           cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --output-signature checksums.txt.sig checksums.txt
+      - name: Verify signed manifest with the updater's embedded public key
+        env:
+          PITH_TEST_RELEASE_DIST: ${{ github.workspace }}/dist
+        run: go test -count=1 -v ./pkg/selfupdate -run '^TestReleaseArtifactSignature$'
       - name: Preserve complete signed release assets before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

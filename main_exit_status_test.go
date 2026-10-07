@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,8 @@ func TestExitCode(t *testing.T) {
 
 // TestCLIExitStatus invokes the compiled shipped entrypoint, not just Cobra or
 // the runner, so a regression to os.Exit(1) in main cannot pass unnoticed.
+// PITH_TEST_BINARY explicitly selects the actual native dist binary in CI. A
+// missing/invalid requested binary fails; there is no silent source-build fallback.
 func TestCLIExitStatus(t *testing.T) {
 	// Keep build caches while isolating configuration, telemetry, and defaults.
 	cacheJSON, err := exec.Command("go", "env", "-json", "GOPATH", "GOMODCACHE", "GOCACHE").Output()
@@ -56,7 +59,24 @@ func TestCLIExitStatus(t *testing.T) {
 	defaultBase := filepath.Join(t.TempDir(), "synthetic default with spaces")
 	binary := filepath.Join(t.TempDir(), "pith.exe")
 	helper := filepath.Join(t.TempDir(), "exit-status-helper.exe")
-	if out, err := exec.Command("go", "build", "-ldflags", "-X 'pith/pkg/config.TheBrainBase="+defaultBase+"'", "-o", binary, "main.go").CombinedOutput(); err != nil {
+	if prebuilt, requested := os.LookupEnv("PITH_TEST_BINARY"); requested {
+		if prebuilt == "" {
+			t.Fatal("PITH_TEST_BINARY was requested but is empty")
+		}
+		binary, err = filepath.Abs(prebuilt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(binary)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("requested package binary must be a regular file: %s (%v)", binary, err)
+		}
+		data, err := os.ReadFile(binary)
+		if err != nil || len(data) == 0 {
+			t.Fatalf("read requested package binary: %v", err)
+		}
+		t.Logf("Testing packaged binary %s SHA-256 %x", binary, sha256.Sum256(data))
+	} else if out, err := exec.Command("go", "build", "-ldflags", "-X 'pith/pkg/config.TheBrainBase="+defaultBase+"'", "-o", binary, "main.go").CombinedOutput(); err != nil {
 		t.Fatalf("build entrypoint: %v\n%s", err, out)
 	}
 	if out, err := exec.Command("go", "build", "-o", helper, "./testdata/exit-status-helper").CombinedOutput(); err != nil {
@@ -144,6 +164,7 @@ func TestCLIExitStatus(t *testing.T) {
 			{name: "trailing-newlines", stdout: "α\nβ\n\n\n"},
 			{name: "above-default-limit", stdout: longOutput},
 			{name: "above-default-limit-stderr", stderr: longOutput},
+			{name: "above-default-limit-combined", stdout: longOutput, stderr: "雪 café 🙂\n" + longOutput},
 			{name: "combined-without-separator", stdout: "{\"artifact\":\"fixture\"}", stderr: "warning: synthetic diagnostic\n\n"},
 		} {
 			for _, code := range []int{0, 42} {
@@ -243,7 +264,24 @@ func TestCLIExitStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prepareStorage(t)
-			_, stderr := runCLI(t, tc.want, tc.args...)
+			stdout, stderr := runCLI(t, tc.want, tc.args...)
+			if tc.name == "version" {
+				if stdout != "Pith "+version+"\n" || stderr != "" {
+					t.Fatalf("version stdout=%q stderr=%q, want exact %q", stdout, stderr, "Pith "+version+"\n")
+				}
+				if tag := os.Getenv("PITH_TEST_RELEASE_TAG"); tag != "" {
+					if tag != version {
+						t.Fatalf("release tag %q differs from binary/source version %q", tag, version)
+					}
+					changelog, err := os.ReadFile("CHANGELOG.md")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(string(changelog), "\n## ["+strings.TrimPrefix(tag, "v")+"] - ") {
+						t.Fatalf("missing matching changelog heading for %s", tag)
+					}
+				}
+			}
 			if tc.want != 0 && !strings.Contains(stderr, "Error:") {
 				t.Fatalf("missing CLI error diagnostic: %q", stderr)
 			}
