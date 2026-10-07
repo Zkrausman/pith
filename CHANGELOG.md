@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] - 2026-10-07
+
+### Fixed
+- Preserve complete captured stdout-plus-stderr for wrapped commands whose execution returns an error, bypassing parsers and truncation so silent failures cannot gain parser-generated success text and late diagnostics remain intact. Existing exit codes, Cobra diagnostics, stream combination, raw mode, successful-command compression, and telemetry privacy are unchanged. Protected failures record passthrough with no parser and equal before/after token estimates.
+
 ## [3.0.3] - 2026-10-07
 ### Fixed
 - Report every omitted Middle-Out segment with its exact line count, including a single line before or between retained hot windows. Retained lines stay ordered and occur once; keyword selection, context width, and marker formats are unchanged.

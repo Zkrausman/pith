@@ -2,16 +2,31 @@ package runner
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
-	"strings"
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"pith/pkg/config"
 	"pith/pkg/parser"
 	"pith/pkg/telemetry"
 )
+
+func TestFailureSignalFixtureProcess(t *testing.T) {
+	if os.Getenv("PITH_TEST_FAILURE_SIGNAL") != "1" {
+		return
+	}
+	fmt.Fprint(os.Stdout, os.Getenv("PITH_TEST_RAW_STDOUT"))
+	fmt.Fprint(os.Stderr, os.Getenv("PITH_TEST_RAW_STDERR"))
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil || process.Kill() != nil {
+		os.Exit(99)
+	}
+	os.Exit(99)
+}
 
 func TestRunFailurePreservesCombinedOutput(t *testing.T) {
 	binary, err := os.Executable()
@@ -25,8 +40,12 @@ func TestRunFailurePreservesCombinedOutput(t *testing.T) {
 		stdout string
 		stderr string
 		code   int
+		skip   bool
+		signal bool
 	}{
 		{name: "empty", code: 1},
+		{name: "skip-parser-long-failure", stdout: longOutput, stderr: "late diagnostic 雪\n\n", code: 42, skip: true},
+		{name: "signal-long-output", stdout: longOutput, stderr: "last diagnostic 雪\n\n", code: -1, signal: true},
 		{name: "empty-failure", code: 42},
 		{name: "unterminated-utf8", stdout: "雪 café 🙂", code: 2},
 		{name: "trailing-newlines", stdout: "α\nβ\n\n\n", code: 7},
@@ -38,6 +57,9 @@ func TestRunFailurePreservesCombinedOutput(t *testing.T) {
 		{name: "long-stderr-failure", stderr: longOutput, code: 42},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.signal && runtime.GOOS == "windows" {
+				t.Skip("Windows termination has no Unix signal status")
+			}
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
@@ -62,17 +84,16 @@ func TestRunFailurePreservesCombinedOutput(t *testing.T) {
 			originalStdout := os.Stdout
 			os.Stdout = output
 			defer func() { os.Stdout = originalStdout }()
-			err = r.Run([]string{binary, "-test.run=TestRawOutputFixtureProcess", "--"})
+			fixture := "TestRawOutputFixtureProcess"
+			if tc.signal {
+				t.Setenv("PITH_TEST_FAILURE_SIGNAL", "1")
+				fixture = "TestFailureSignalFixtureProcess"
+			}
+			err = r.RunWithOptions([]string{binary, "-test.run=" + fixture, "--"}, tc.skip)
 			os.Stdout = originalStdout
-			if tc.code == 0 {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.code {
-					t.Fatalf("child error = %v, want exit %d", err, tc.code)
-				}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.code {
+				t.Fatalf("child error = %v, want exit %d", err, tc.code)
 			}
 			got, err := os.ReadFile(output.Name())
 			if err != nil {
@@ -92,7 +113,6 @@ func TestRunFailurePreservesCombinedOutput(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // An embedded NUL makes executable startup invalid
