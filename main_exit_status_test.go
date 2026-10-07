@@ -96,8 +96,13 @@ func TestCLIExitStatus(t *testing.T) {
 		}
 		return stdout.String(), stderr.String()
 	}
+	codes := []int{0, 1, 2, 7, 42, 127}
+	if runtime.GOOS == "windows" {
+		// Windows exposes wider exit codes; do not truncate them to Unix's byte.
+		codes = append(codes, 301)
+	}
 	for _, route := range []string{"normal", "raw"} {
-		for _, code := range []int{0, 1, 2, 7, 42, 127} {
+		for _, code := range codes {
 			for _, mode := range []string{"silent", "success-text", "stderr-only", "streams"} {
 				t.Run(fmt.Sprintf("%s/%d/%s", route, code, mode), func(t *testing.T) {
 					prepareStorage(t)
