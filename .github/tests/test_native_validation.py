@@ -2,6 +2,7 @@ import importlib.util
 import itertools
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -112,13 +113,60 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_publication_is_push_tag_only_and_needs_validation(self):
         release = self.jobs["release"]
-        self.assertIn("if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}", release)
+        self.assertIn("!cancelled()", release)
         self.assertIn("needs: [build, validation]", release)
         self.assertNotIn("always()", release)
         self.assertNotIn("workflow_dispatch:", self.workflow)
         self.assertNotIn("pull_request_target:", self.workflow)
         self.assertEqual(self.workflow.count("contents: write"), 1)
         self.assertEqual(self.workflow.count("secrets."), 2)
+
+    def release_allowed(self, event, ref, build, validation, cancelled=False,
+                        ancestors_succeeded=True):
+        # Evaluate the actual conjunction's supported predicates, not a second
+        # copy of the release condition. Unknown syntax fails the test closed.
+        # This models documented status defaults, NOT the hosted scheduler.
+        # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
+        expression = re.search(r"^    if: \$\{\{ (.+) \}\}$",
+                               self.jobs["release"], re.MULTILINE).group(1)
+        predicates = {
+            "!cancelled()": not cancelled,
+            "github.event_name == 'push'": event == "push",
+            "startsWith(github.ref, 'refs/tags/v')": ref.startswith("refs/tags/v"),
+            "needs.build.result == 'success'": build == "success",
+            "needs.validation.result == 'success'": validation == "success",
+        }
+        terms = [term.strip() for term in expression.split("&&")]
+        self.assertTrue(all(term in predicates for term in terms), expression)
+        # Without a status function, implicit success gating rejects a skipped
+        # ancestor even when the explicit event/ref condition would be true.
+        if "!cancelled()" not in terms and not ancestors_succeeded:
+            return False
+        return all(predicates[term] for term in terms)
+
+    def test_validated_tag_with_intentionally_skipped_windows_link_can_release(self):
+        results = dict(test="success", gate="success", windows="skipped",
+                       build="success", required="true")
+        self.assertTrue(gate.accepted(results, "push", "refs/tags/v3.0.7"))
+        self.assertTrue(self.release_allowed("push", "refs/tags/v3.0.7",
+                                            "success", "success", ancestors_succeeded=False))
+
+    def test_release_rejects_failed_missing_skipped_or_cancelled_dependencies(self):
+        statuses = ("success", "failure", "cancelled", "skipped", "", None)
+        for build, validation, cancelled in itertools.product(statuses, statuses, (False, True)):
+            with self.subTest(build=build, validation=validation, cancelled=cancelled):
+                self.assertEqual(self.release_allowed("push", "refs/tags/v3.0.7", build,
+                                                      validation, cancelled),
+                                 not cancelled and build == validation == "success")
+
+    def test_release_rejects_non_tag_and_non_push_events(self):
+        for event, ref in itertools.product(
+                ("push", "pull_request", "pull_request_target", "workflow_dispatch", ""),
+                ("refs/tags/v3.0.7", "refs/heads/main", "refs/heads/v3.0.7",
+                 "refs/pull/1/merge", "refs/tags/other", "")):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(self.release_allowed(event, ref, "success", "success"),
+                                 event == "push" and ref == "refs/tags/v3.0.7")
 
     def test_artifact_validation_precedes_upload_and_publish(self):
         build = self.jobs["build"]
