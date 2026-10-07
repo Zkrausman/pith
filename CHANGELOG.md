@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.7] - 2026-10-07
+
+### Fixed
+- Make release-job admission explicit after the intentional tag-only Windows-link skip: require a non-cancelled push to a v-tag and successful native builds and aggregate validation. Signing, production-key verification, immutable asset publication, and the exact documentation allowlist remain unchanged.
+
+### Release notes
+- Supersedes unpublished v3.0.6, whose source tests, native package smokes, and validation passed but whose release job was skipped before signing or publication. Preserve its tag; this is a fresh version, not a rerun or reuse.
+- Includes cumulative v3 changes since the last public v2.4.8 release. No GitStatus inventory, du/filesystem-fidelity, or additional structured-output parser changes are included.
+
 ## [3.0.6] - 2026-10-07
 
 ### Fixed
