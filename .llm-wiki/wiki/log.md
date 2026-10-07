@@ -2,6 +2,8 @@
 
 ## 2026-10-07
 
+- Release publication now requires reviewed version-specific notes before any remote call, supplies the exact text to new-draft creation, and compares body equality at the numeric-ID draft and public checks. Repository-owned nonsymlink paths, UTF-8, matching headings and nonblank bodies are tested alongside rejection before remote writes. The first-v3 cumulative notes live in `docs/release-notes/v3.0.3.md`, outside the unchanged six-asset set. No binary, build input, signature gate, credentials, permissions, tag, or publication authorization changes; the source version remains v3.0.3.
+
 - Normal Middle-Out truncation now discloses each omitted source segment, including one-line gaps before or between hot windows, without duplicating or reordering retained lines. Gap counts use the actual retained-window start. A final newline terminates the final line instead of consuming an extra tail slot; actual blank lines still count and retained bytes are preserved. Deterministic tables, exhaustive hot-line placements, and compiled-entrypoint fixtures cover boundaries and raw passthrough. Existing keywords, context width, marker formats, numeric exit status, raw bypass, shell/stream behavior, and telemetry/privacy are unchanged. Compression remains lossy; upstream omission handling and independent stream fidelity are separate work. Patch version: v3.0.3; no release or installation is implied.
 
 - Explicit `pith raw` now uses `Runner.RunRaw` to bypass both parser dispatch and head/tail/hot-zone truncation. `RunWithOptions(skipParsing=true)`, disabled parsers, and normal parser compression retain their previous truncation behavior. The raw contract is complete captured stdout followed by stderr on Pith's stdout, preserving bytes without claiming original stream destinations or interleaving. Existing CLI diagnostics, child exit status, shell behavior, telemetry, and privacy policies remain unchanged. Deterministic runner and compiled-entrypoint fixtures cover above-limit output, UTF-8, trailing newlines, empty output, and misleading failure text. Patch version: v3.0.2; no release or installation is implied.
@@ -21,3 +23,4 @@
 - **retro**: {"category":"deployment","slug":"pith-local-upgrade-merged-aidev-153","title":"Pith local upgrade to merged AIDEV-153"}
 - **retro**: {"category":"testing","slug":"pith-provenance-count-semantics","title":"Pith provenance count semantics"}
 - **observe**: {"relevance":"medium","slug":"obs-2026-09-16-aidev-153-recovery-restarted-in-pith-worktree","title":"AIDEV-153 recovery restarted in Pith worktree"}
+

@@ -1,13 +1,15 @@
-"""Publish an immutable, complete release; leave failures as drafts, never retry/clobber."""
+"""Publish an immutable, complete release; verify notes/assets before and after publication, never retry/clobber."""
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 import subprocess
 
 BINARIES = ("pith-darwin-arm64", "pith-linux-amd64", "pith-windows-amd64.exe")
 ASSETS = BINARIES + ("checksums.txt", "checksums.txt.sig", "sbom.cdx.json")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def gh(*args):
@@ -36,9 +38,32 @@ def local_assets(directory):
     return expected
 
 
-def verify_remote(release, tag, expected, draft):
+def local_notes(tag):
+    # Resolve only the repository-owned path. Reject symlink parents as well as
+    # the leaf, so a notes directory cannot redirect reads outside the checkout.
+    directory = REPOSITORY_ROOT
+    for component in ("docs", "release-notes"):
+        directory = directory / component
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("release notes directory must be a real directory")
+    file = directory / (tag + ".md")
+    if not stat.S_ISREG(file.lstat().st_mode) or file.stat().st_size == 0:
+        raise ValueError("release notes must be a nonempty regular nonsymlink file")
+    # Decode bytes explicitly to preserve reviewed newlines and exact body text.
+    notes = file.read_bytes().decode("utf-8")
+    lines = notes.splitlines()
+    if not lines or lines[0] != "# Pith " + tag or not "\n".join(lines[1:]).strip():
+        raise ValueError("release notes require matching first heading and body")
+    if "\x00" in notes:
+        raise ValueError("release notes must not contain NUL")
+    return notes
+
+
+def verify_remote(release, tag, expected, draft, notes):
     if release.get("tag_name") != tag or release.get("draft") is not draft:
         raise ValueError("unexpected release identity/state")
+    if release.get("body") != notes:
+        raise ValueError("remote release notes do not match reviewed body")
     assets = release.get("assets", [])
     if len(assets) != len(expected) or {a.get("name") for a in assets} != set(expected):
         raise ValueError("remote release asset set is incomplete or unexpected")
@@ -52,12 +77,13 @@ def verify_remote(release, tag, expected, draft):
 def publish(repository, tag, directory, run=gh):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("invalid repository")
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+    if not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
         raise ValueError("invalid release tag")
+    notes = local_notes(tag)
     expected = local_assets(directory)
     # Fail if a release already exists. No tag recreation, replacement, or retry.
     run("release", "create", tag, "--repo", repository, "--verify-tag", "--draft",
-        "--title", tag, "--generate-notes")
+        "--title", tag, "--notes", notes)
     for name in ASSETS:
         print("Uploading " + name, flush=True)
         run("release", "upload", tag, str(Path(directory) / name), "--repo", repository)
@@ -68,9 +94,9 @@ def publish(repository, tag, directory, run=gh):
     if type(release_id) is not int or release_id <= 0:
         raise ValueError("invalid release database ID")
     endpoint = f"repos/{repository}/releases/{release_id}"
-    verify_remote(json.loads(run("api", endpoint)), tag, expected, True)
+    verify_remote(json.loads(run("api", endpoint)), tag, expected, True, notes)
     run("release", "edit", tag, "--repo", repository, "--draft=false", "--latest")
-    verify_remote(json.loads(run("api", endpoint)), tag, expected, False)
+    verify_remote(json.loads(run("api", endpoint)), tag, expected, False, notes)
     print("Published verified release " + tag, flush=True)
 
 
@@ -81,3 +107,4 @@ if __name__ == "__main__":
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
     publish(args.repository, args.tag, args.directory)
+

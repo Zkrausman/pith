@@ -28,9 +28,16 @@ builds gate the release job. The six assets are `pith-linux-amd64`,
 its signature authenticates the manifest, not the SBOM. CI retains the complete
 set as `signed-release-<tag>` for 30 days before publication.
 
-The publisher validates the exact local set and binary manifest, creates a new
+The publisher first requires reviewed UTF-8 notes at
+`docs/release-notes/<canonical-tag>.md` in the checkout, rejecting symlink parents
+and nonregular/symlink/empty files, wrong headings, and blank bodies before any
+remote call. It snapshots the exact text and supplies it with `--notes` to a new
+draft; no generated-only notes, precreated draft, or concurrent external edit is
+part of this flow. Notes remain outside the exact six-asset distribution set.
+
+The publisher validates the exact local set and binary manifest, creates that new
 draft, uploads serially without retry/clobber, resolves a positive numeric
-release ID, and checks tag/state plus exact remote names/count/uploaded
+release ID, and checks exact reviewed body equality, tag/state, and remote names/count/uploaded
 states/sizes/SHA-256 metadata before publication. It repeats verification by the
 same numeric ID after making the release public/latest. It compares metadata
 for all six files, rather than re-downloading them or verifying the signature.
@@ -52,3 +59,4 @@ observed asset metadata, error, retained artifact identity, and updater
 platform/version/result. Exclude credentials, secrets, personal data, and
 owner-local paths. Fail-closed integrity checks do not eliminate service outages
 or authorize manual repair, bypass, or installation.
+
