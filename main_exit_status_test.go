@@ -266,7 +266,9 @@ func TestCLIExitStatus(t *testing.T) {
 			prepareStorage(t)
 			stdout, stderr := runCLI(t, tc.want, tc.args...)
 			if tc.name == "version" {
-				if stdout != "Pith "+version+"\n" || stderr != "" {
+				// Cobra's existing Printf default writes version to stderr.
+				// Validate exact bytes without changing that production behavior.
+				if stdout != "" || stderr != "Pith "+version+"\n" {
 					t.Fatalf("version stdout=%q stderr=%q, want exact %q", stdout, stderr, "Pith "+version+"\n")
 				}
 				if tag := os.Getenv("PITH_TEST_RELEASE_TAG"); tag != "" {
