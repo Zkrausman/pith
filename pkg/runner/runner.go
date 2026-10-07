@@ -343,7 +343,10 @@ func (r *Runner) run(args []string, opts runOptions) error {
 }
 
 func (r *Runner) ApplyMiddleOutTruncation(output string) string {
-	lines := strings.Split(output, "\n")
+	// A final newline terminates the last line; it is not another tail slot.
+	// Remove only that terminator so any actual blank lines still count.
+	hasFinalNewline := strings.HasSuffix(output, "\n")
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 	if len(lines) <= r.cfg.MaxLines {
 		return output
 	}
@@ -368,12 +371,12 @@ func (r *Runner) ApplyMiddleOutTruncation(output string) string {
 	resultLines := append([]string{}, lines[:head]...)
 	lastIndex := head
 	for _, zone := range hotZones {
-		if zone > lastIndex+2 {
-			resultLines = append(resultLines, fmt.Sprintf("\n... [%d lines of non-critical output removed by Pith] ...\n", zone-lastIndex-1))
-		}
 		start := zone - 1
 		if start < lastIndex {
 			start = lastIndex
+		}
+		if start > lastIndex {
+			resultLines = append(resultLines, fmt.Sprintf("\n... [%d lines of non-critical output removed by Pith] ...\n", start-lastIndex))
 		}
 		end := zone + 1
 		if end >= middleEnd {
@@ -390,7 +393,11 @@ func (r *Runner) ApplyMiddleOutTruncation(output string) string {
 		resultLines = append(resultLines, fmt.Sprintf("\n... [%d lines removed by Pith middle-out truncation] ...\n", middleEnd-lastIndex))
 	}
 	resultLines = append(resultLines, lines[len(lines)-tail:]...)
-	return strings.Join(resultLines, "\n")
+	result := strings.Join(resultLines, "\n")
+	if hasFinalNewline {
+		result += "\n"
+	}
+	return result
 }
 
 func (r *Runner) EstimateTokens(s string) int {
