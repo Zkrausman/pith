@@ -23,6 +23,7 @@ jobs:
           cache: true
       - run: go mod download
       - run: go test -v ./...
+      - run: go vet ./...
       - name: Test release publication safeguards
         run: python3 -m unittest discover -s .github/tests -v
 
@@ -43,6 +44,7 @@ jobs:
         run: |
           gcc --version
           go test ./pkg/anomaly
+          go test -v . -run '^(TestExitCode|TestCLIExitStatus)$'
           go build -trimpath -o pith.exe .
           ./pith.exe version
 

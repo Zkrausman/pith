@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/spf13/cobra"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"pith/pkg/advisor"
 	"pith/pkg/anomaly"
@@ -23,7 +25,7 @@ import (
 	"time"
 )
 
-const version = "v3.0.0"
+const version = "v3.0.1"
 
 type HookInput struct {
 	ToolResponse struct {
@@ -217,8 +219,24 @@ func NewRootCmd() *cobra.Command {
 func main() {
 	rootCmd := NewRootCmd()
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+// exitCode preserves normal child exits without changing generic CLI failures.
+// Signal termination has no numeric exit code in Go and keeps the existing
+// status 1 fallback; signal forwarding and shell conventions are separate.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if code := exitErr.ExitCode(); code >= 0 {
+			return code
+		}
+	}
+	return 1
 }
 
 func runRoot(cmd *cobra.Command, args []string) error {
