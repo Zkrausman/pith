@@ -132,6 +132,9 @@ func (t *TestParser) CanParse(cmd string, args []string) bool {
 	return true
 }
 func (t *TestParser) Parse(output string) string {
+	if hasStructuredLine(output) {
+		return output
+	}
 	lines := strings.Split(output, "\n")
 	var result []string
 	isFailureBlock := false
@@ -175,7 +178,8 @@ func (t *TestParser) Parse(output string) string {
 	}
 
 	if len(result) == 0 {
-		return "Tests finished. (No summary captured)"
+		// No recognized summary or diagnostic is evidence of completion.
+		return output
 	}
 	return strings.Join(result, "\n")
 }
@@ -188,6 +192,9 @@ func (g *GoToolCoverParser) CanParse(cmd string, args []string) bool {
 	return MatchCommand(cmd, "go") && len(args) > 2 && args[0] == "tool" && args[1] == "cover"
 }
 func (g *GoToolCoverParser) Parse(output string) string {
+	if hasStructuredLine(output) {
+		return output
+	}
 	lines := strings.Split(output, "\n")
 	var result []string
 
@@ -211,13 +218,9 @@ func (g *GoToolCoverParser) Parse(output string) string {
 	}
 
 	if len(result) == 0 {
-		// If everything is 100%, just show the total if we found it, or a success message
-		for _, line := range lines {
-			if strings.HasPrefix(strings.TrimSpace(line), "total:") {
-				return line
-			}
-		}
-		return "Coverage: 100.0% across all functions."
+		// Missing evidence (including all-100% rows without a total) does not
+		// justify an aggregate coverage claim. Preserve the captured bytes.
+		return output
 	}
 
 	// Limit to top 30 "problem" functions
@@ -281,9 +284,9 @@ func (g *GitHubParser) Parse(output string) string {
 		}
 
 		// Strictly skip actual table headers, not paragraph text
-		if (strings.HasPrefix(trimmed, "Showing ") && strings.Contains(trimmed, "results")) || 
-		   strings.HasPrefix(trimmed, "TITLE \t") || strings.HasPrefix(trimmed, "TITLE  ") ||
-		   strings.HasPrefix(trimmed, "NAME \t") || strings.HasPrefix(trimmed, "NAME  ") {
+		if (strings.HasPrefix(trimmed, "Showing ") && strings.Contains(trimmed, "results")) ||
+			strings.HasPrefix(trimmed, "TITLE \t") || strings.HasPrefix(trimmed, "TITLE  ") ||
+			strings.HasPrefix(trimmed, "NAME \t") || strings.HasPrefix(trimmed, "NAME  ") {
 			continue
 		}
 

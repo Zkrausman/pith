@@ -35,25 +35,37 @@ func (g *GitStatusParser) CanParse(cmd string, args []string) bool {
 	return sub == "status" || sub == "add" || sub == "commit" || sub == "push"
 }
 func (g *GitStatusParser) Parse(output string) string {
+	if hasStructuredLine(output) {
+		return output
+	}
+	recognizedContext := false
 	lines := strings.Split(output, "\n")
 	var result []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "(use ") ||
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "(use ") ||
 			strings.HasPrefix(trimmed, "On branch") || strings.HasPrefix(trimmed, "Your branch") ||
-			strings.Contains(trimmed, "nothing to commit") || strings.Contains(trimmed, "no changes added") ||
+			strings.HasPrefix(trimmed, "nothing to commit") || strings.HasPrefix(trimmed, "no changes added") ||
 			strings.HasPrefix(trimmed, "Changes not staged") || strings.HasPrefix(trimmed, "Changes to be committed") ||
 			strings.HasPrefix(trimmed, "Untracked files") ||
 			strings.HasPrefix(trimmed, "Everything up-to-date") ||
-			strings.HasPrefix(trimmed, "To ") ||
-			strings.Contains(trimmed, "->") { // push output
+			strings.HasPrefix(trimmed, "To ") {
+			recognizedContext = true
+			continue
+		}
+		if strings.Contains(trimmed, "->") { // push output only with human context
 			continue
 		}
 		result = append(result, trimmed)
 	}
 
-	if len(result) == 0 {
-		return "Git: Success (No verbose output)"
+	// Empty or unsupported capture cannot establish command success. Keep
+	// machine-readable rows and their whitespace intact without Git context.
+	if len(result) == 0 || !recognizedContext {
+		return output
 	}
 
 	if len(result) > 20 {

@@ -9,6 +9,17 @@ import (
 )
 
 func main() {
+	// Alias mode exercises real parser dispatch without invoking installed tools.
+	if os.Getenv("PITH_TEST_CAPTURE_FIXTURE") == "1" {
+		code, err := strconv.Atoi(os.Getenv("PITH_TEST_RAW_EXIT"))
+		if err != nil {
+			os.Exit(99)
+		}
+		fmt.Fprint(os.Stdout, os.Getenv("PITH_TEST_RAW_STDOUT"))
+		fmt.Fprint(os.Stderr, os.Getenv("PITH_TEST_RAW_STDERR"))
+		os.Exit(code)
+	}
+
 	if len(os.Args) != 3 {
 		os.Exit(99)
 	}

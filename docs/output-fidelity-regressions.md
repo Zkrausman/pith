@@ -157,6 +157,8 @@ Why this adds value: for the eight-line input, source inspection predicts that t
 
 Suggested test: `TestNoInventedSuccess`, for relevant parser units, the runner, and Pi transform.
 
+Implemented in v3.0.5: the affected Git/test/coverage parsers conservatively return captured output when no retained evidence exists, and preserve structured-looking captures rather than extracting partial JSON fields. Git without recognized human-readable context preserves original bytes. Pi reports unchanged fallback output as passthrough, with its mandatory redaction still applied. Deterministic parser-registry and hook fixtures plus `TestCLIExitStatus/parser-fallback-evidence` exercise normal/raw execution and both shipped hook routes; synthetic command aliases avoid invoking actual developer tools. Recognized summary controls remain covered. Independent runner/legacy-hook truncation still applies above configured limits, so this is not a general lossless-output claim.
+
 Concrete table rows:
 
 ```text

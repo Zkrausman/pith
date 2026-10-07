@@ -79,3 +79,17 @@ func GetAllParsers() []Parser {
 	}
 	return append(parsers, &ChainParser{})
 }
+
+// hasStructuredLine keeps complete or malformed JSON-like captures out of
+// line-oriented summary parsers, including output after a tool's banner.
+// Partial fields are not test or coverage evidence; false positives preserve
+// additional context rather than inferring a result from it.
+func hasStructuredLine(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, `"`) {
+			return true
+		}
+	}
+	return false
+}

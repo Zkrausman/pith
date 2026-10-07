@@ -119,8 +119,11 @@ func OptimizeHook(req HookRequest) HookResponse {
 				enabled, configured := req.EnabledParsers[candidate.Name()]
 				if (!configured || enabled) && candidate.CanParse(parts[0], parts[1:]) {
 					rawParsed := candidate.Parse(req.Output)
-					// Unsupported Git log formats retain passthrough provenance.
-					if candidate.Name() == "git_log" && rawParsed == req.Output {
+					// Conservative fallbacks retain passthrough provenance, before
+					// mandatory redaction changes any rendered bytes.
+					if rawParsed == req.Output && (candidate.Name() == "git_log" ||
+						candidate.Name() == "git_status" || candidate.Name() == "tests" ||
+						candidate.Name() == "go_cover") {
 						reason = telemetry.DecisionUnsupportedParser
 						break
 					}
