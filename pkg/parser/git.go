@@ -199,59 +199,39 @@ func (c *CompositeGitParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
 	var result []string
 
-	var currentCommit, currentAuthor, currentDate, currentSubject string
-
-	flushCommit := func() {
-		if currentCommit != "" {
-			result = append(result, formatCommit(currentCommit, currentAuthor, currentDate, currentSubject))
-			currentCommit = ""
-		}
-	}
-
-	inCommitBlock := false
-
-	for _, line := range lines {
-		cleanLine := ansiRegex.ReplaceAllString(line, "")
+	// Validate an entire commit record before accepting any compression. A
+	// fallback returns the original capture, including earlier sections and ANSI.
+	for i := 0; i < len(lines); i++ {
+		cleanLine := ansiRegex.ReplaceAllString(lines[i], "")
 		trimmed := strings.TrimSpace(cleanLine)
 
 		if strings.HasPrefix(cleanLine, "commit ") {
-			if inCommitBlock {
-				flushCommit()
+			if len(lines)-i < 5 {
+				return output
 			}
-			inCommitBlock = true
-			currentCommit = strings.TrimPrefix(cleanLine, "commit ")
-			if len(currentCommit) > 7 {
-				currentCommit = currentCommit[:7]
+			record := ansiRegex.ReplaceAllString(strings.Join(lines[i:i+5], "\n"), "")
+			summary := (&GitLogParser{}).Parse(record)
+			if summary == record {
+				return output
 			}
-			currentAuthor, currentDate, currentSubject = "", "", ""
+			// Only a new record or recognized Git section may follow the
+			// single subject. Bodies, signatures and unknown/truncated metadata
+			// are unsupported, rather than silently discarded.
+			next := i + 5
+			for next < len(lines) && lines[next] == "" {
+				next++
+			}
+			if next < len(lines) {
+				boundary := ansiRegex.ReplaceAllString(lines[next], "")
+				if !strings.HasPrefix(boundary, "commit ") &&
+					!strings.HasPrefix(boundary, "diff --git ") &&
+					!strings.HasPrefix(boundary, "On branch ") {
+					return output
+				}
+			}
+			result = append(result, summary)
+			i = next - 1
 			continue
-		}
-
-		if inCommitBlock {
-			if strings.HasPrefix(cleanLine, "Author: ") {
-				currentAuthor = strings.TrimPrefix(cleanLine, "Author: ")
-				if idx := strings.Index(currentAuthor, " <"); idx != -1 {
-					currentAuthor = currentAuthor[:idx]
-				}
-				continue
-			} else if strings.HasPrefix(cleanLine, "Date: ") {
-				currentDate = strings.TrimPrefix(cleanLine, "Date: ")
-				fields := strings.Fields(currentDate)
-				if len(fields) >= 3 {
-					currentDate = fields[1] + " " + fields[2] + " " + fields[4]
-				}
-				continue
-			} else if strings.HasPrefix(cleanLine, "Merge: ") || strings.HasPrefix(cleanLine, "gpg: ") || strings.HasPrefix(cleanLine, "Primary key ") || strings.HasPrefix(cleanLine, "Good \"git\" signature") {
-				continue
-			} else if cleanLine == "" || strings.HasPrefix(cleanLine, "    ") {
-				if currentSubject == "" && currentCommit != "" && trimmed != "" {
-					currentSubject = trimmed
-				}
-				continue
-			}
-			// If it's none of the above, it's the end of the commit block (stats or diff)
-			flushCommit()
-			inCommitBlock = false
 		}
 
 		if strings.HasPrefix(cleanLine, "index ") || strings.HasPrefix(cleanLine, "diff --git") {
@@ -283,7 +263,6 @@ func (c *CompositeGitParser) Parse(output string) string {
 		result = append(result, cleanLine)
 	}
 
-	flushCommit()
 	return strings.Join(result, "\n")
 }
 
@@ -297,10 +276,15 @@ func (g *GitShowParser) CanParse(cmd string, args []string) bool {
 	return cmd == "git" && getGitSubcommand(args) == "show"
 }
 func (g *GitShowParser) Parse(output string) string {
+	// show can return arbitrary blob contents or annotated tags. Only a
+	// leading default-format commit is eligible for composite compression.
+	if !strings.HasPrefix(ansiRegex.ReplaceAllString(output, ""), "commit ") {
+		return output
+	}
 	if g.comp == nil {
 		g.comp = &CompositeGitParser{}
 	}
 	// Git show output looks just like a composite of git log and git diff!
-	// We can safely pass it through CompositeGitParser.
+	// CompositeGitParser validates the record before compressing it.
 	return g.comp.Parse(output)
 }

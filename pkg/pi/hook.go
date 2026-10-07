@@ -121,7 +121,7 @@ func OptimizeHook(req HookRequest) HookResponse {
 					rawParsed := candidate.Parse(req.Output)
 					// Conservative fallbacks retain passthrough provenance, before
 					// mandatory redaction changes any rendered bytes.
-					if rawParsed == req.Output && (candidate.Name() == "git_log" ||
+					if rawParsed == req.Output && (candidate.Name() == "git_log" || candidate.Name() == "git_show" ||
 						candidate.Name() == "git_status" || candidate.Name() == "tests" ||
 						candidate.Name() == "go_cover") {
 						reason = telemetry.DecisionUnsupportedParser

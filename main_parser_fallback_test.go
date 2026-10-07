@@ -59,6 +59,9 @@ func testCLIParserFallbacks(t *testing.T, binary, helper string) {
 	}
 	for _, tc := range []struct{ name, command, output string }{
 		{"empty-status", "git status", ""},
+		{"show-short-date", "git show", "commit 0123456789abcdef0123456789abcdef01234567\nAuthor: Example <example@example.invalid>\nDate:   Sun Mar 15\n\n    Subject\n"},
+		{"show-incomplete", "git show", "commit abc1234\n\n"},
+		{"show-blob", "git show HEAD:fixture", "On branch main\nindex literal content\n@@ retained\n"},
 		{"empty-porcelain", "git status --porcelain=v1", ""},
 		{"empty-add", "git add fixture", ""},
 		{"empty-coverage", "go tool cover -func missing.cov", ""},

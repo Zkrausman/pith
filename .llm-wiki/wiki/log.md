@@ -28,3 +28,11 @@
 - **retro**: {"category":"testing","slug":"pith-provenance-count-semantics","title":"Pith provenance count semantics"}
 - **observe**: {"relevance":"medium","slug":"obs-2026-09-16-aidev-153-recovery-restarted-in-pith-worktree","title":"AIDEV-153 recovery restarted in Pith worktree"}
 
+
+## 2026-10-07 — Composite Git capture validation
+
+- Reproduced shortened-date panics and partial-summary invention with synthetic Git captures.
+- Validate complete default-format commit records before composite/GitShow compression; preserve original captures on unsupported/incomplete shapes and preserve non-commit GitShow output.
+- Retain Pi redaction/passthrough and supported simple commit/diff behavior; leave GitStatus inventories and frozen trial PRs unchanged.
+- Add parser/registry, Pi, and packaged CLI fixtures; patch version v3.0.6. No tag, release, installation, or source/provider benchmark.
+- Contract: [Composite Git capture preservation](/concepts/composite-git-preservation.md).
