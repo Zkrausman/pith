@@ -15,6 +15,96 @@ import (
 	"time"
 )
 
+type cliGoBuildCache struct {
+	GOPATH     string `json:"GOPATH"`
+	GOMODCACHE string `json:"GOMODCACHE"`
+	GOCACHE    string `json:"GOCACHE"`
+	GOENV      string `json:"GOENV"`
+}
+
+func effectiveCLIGoBuildCache(t *testing.T) cliGoBuildCache {
+	t.Helper()
+	cache := readCLIGoBuildCache(t, exec.Command("go", "env", "-json", "GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"))
+	if goenv, ok := os.LookupEnv("GOENV"); ok && goenv != "" {
+		cache.GOENV = goenv
+	}
+	return cache
+}
+
+func readCLIGoBuildCache(t *testing.T, cmd *exec.Cmd) cliGoBuildCache {
+	t.Helper()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("resolve Go build cache before isolating CLI home: %v", err)
+	}
+	var cache cliGoBuildCache
+	if err := json.Unmarshal(out, &cache); err != nil {
+		t.Fatalf("decode Go build cache settings %q: %v", out, err)
+	}
+	if cache.GOPATH == "" || !filepath.IsAbs(cache.GOMODCACHE) || !filepath.IsAbs(cache.GOCACHE) {
+		t.Fatalf("Go build cache paths must resolve before isolating CLI home: GOPATH=%q GOMODCACHE=%q GOCACHE=%q", cache.GOPATH, cache.GOMODCACHE, cache.GOCACHE)
+	}
+	return cache
+}
+
+func cliGoCommand(cache cliGoBuildCache, args ...string) *exec.Cmd {
+	cmd := exec.Command("go", args...)
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && (strings.EqualFold(name, "GOPATH") || strings.EqualFold(name, "GOMODCACHE") || strings.EqualFold(name, "GOCACHE") || strings.EqualFold(name, "GOENV")) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env,
+		"GOPATH="+cache.GOPATH,
+		"GOMODCACHE="+cache.GOMODCACHE,
+		"GOCACHE="+cache.GOCACHE,
+		"GOENV="+cache.GOENV,
+	)
+	return cmd
+}
+
+// Capture Go's resolved build locations before isolating the app home. Go
+// normally derives its default GOPATH (and thus GOMODCACHE) from HOME, so child
+// go builds must receive the captured settings after HOME changes.
+func isolateCLIHome(t *testing.T, home string) cliGoBuildCache {
+	t.Helper()
+	cache := effectiveCLIGoBuildCache(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return cache
+}
+
+func cliPathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func TestCLIIsolatedHomeKeepsGoModuleCache(t *testing.T) {
+	// Exercise the runner-default case that exposed the hosted failure: neither
+	// GOPATH nor GOMODCACHE is explicitly provided by the environment.
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOPATH", "")
+	t.Setenv("GOMODCACHE", "")
+	want := effectiveCLIGoBuildCache(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	got := readCLIGoBuildCache(t, cliGoCommand(want, "env", "-json", "GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"))
+	if got.GOPATH != want.GOPATH || got.GOMODCACHE != want.GOMODCACHE || got.GOCACHE != want.GOCACHE {
+		t.Fatalf("isolated CLI home changed Go's resolved build cache: got %+v, want %+v", got, want)
+	}
+	if cliPathWithin(home, got.GOMODCACHE) {
+		t.Fatalf("Go module cache %q is inside isolated CLI home %q", got.GOMODCACHE, home)
+	}
+	t.Logf("isolated CLI home %q retains Go module cache %q", home, got.GOMODCACHE)
+}
+
 func cliVitestLateFailureFixture() string {
 	lines := make([]string, 0, 68)
 	for i := 1; i <= 60; i++ {
@@ -37,8 +127,7 @@ func cliVitestLateFailureFixture() string {
 // synthetic Vitest executable; the test never runs Vitest or a real suite.
 func TestCLIVitestDiagnosticFidelity(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	goCache := isolateCLIHome(t, home)
 	storage := t.TempDir()
 	t.Setenv("PITH_STORAGE", storage)
 	config, err := json.Marshal(map[string]any{"last_update_check": time.Now().Unix()})
@@ -62,7 +151,7 @@ func TestCLIVitestDiagnosticFidelity(t *testing.T) {
 		if err != nil || !info.Mode().IsRegular() {
 			t.Fatalf("requested package binary must be a regular file: %s (%v)", binary, err)
 		}
-	} else if out, err := exec.Command("go", "build", "-o", binary, "main.go").CombinedOutput(); err != nil {
+	} else if out, err := cliGoCommand(goCache, "build", "-o", binary, "main.go").CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, out)
 	}
 
@@ -70,7 +159,7 @@ func TestCLIVitestDiagnosticFidelity(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		helper += ".exe"
 	}
-	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", helper, "./testdata/exit-status-helper").CombinedOutput(); err != nil {
+	if out, err := cliGoCommand(goCache, "build", "-buildvcs=false", "-o", helper, "./testdata/exit-status-helper").CombinedOutput(); err != nil {
 		t.Fatalf("build synthetic command: %v\n%s", err, out)
 	}
 	aliases := t.TempDir()
