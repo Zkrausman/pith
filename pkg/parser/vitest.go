@@ -2,8 +2,15 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var vitestANSISequence = regexp.MustCompile("\\x1b\\[[0-?]*[ -/]*[@-~]")
+var vitestRuleOnlyLine = regexp.MustCompile(`^⎯{10,}$`)
+var vitestFailedTestsRule = regexp.MustCompile(`^⎯{10,}\s+Failed Tests \d+$`)
+var vitestNumberedRule = regexp.MustCompile(`^⎯{10,}\s*\[[0-9]+/[0-9]+\]\s*⎯+$`)
+var vitestUnhandledErrorsRule = regexp.MustCompile(`^⎯{2,}\s*unhandled errors\s*⎯{2,}$`)
 
 type VitestParser struct{}
 
@@ -18,6 +25,9 @@ func (v *VitestParser) CanParse(cmd string, args []string) bool {
 
 func (v *VitestParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
+	if vitestOutputHasFailure(lines) {
+		return preserveVitestFailure(output, lines)
+	}
 	var result []string
 
 	hasSummary := false
@@ -80,4 +90,57 @@ func (v *VitestParser) Parse(output string) string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+// Keep failure-bearing output intact: the compact summary rules below may
+// otherwise omit expected/received values and stack locations around a failure.
+func vitestOutputHasFailure(lines []string) bool {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(vitestANSISequence.ReplaceAllString(line, ""))
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(trimmed, "FAIL") ||
+			strings.Contains(trimmed, "AssertionError") ||
+			strings.Contains(trimmed, "TypeError:") ||
+			strings.Contains(trimmed, "Error:") ||
+			lower == "unhandled errors" || vitestUnhandledErrorsRule.MatchString(lower) ||
+			lower == "unhandled rejection" || strings.HasPrefix(lower, "unhandled rejection:") ||
+			vitestErrorCountLine(lower) ||
+			(strings.Contains(lower, "failed") &&
+				(strings.Contains(lower, "tests") || strings.Contains(lower, "test files") || strings.HasPrefix(trimmed, "❯"))) {
+			return true
+		}
+	}
+	return false
+}
+
+func vitestErrorCountLine(lower string) bool {
+	fields := strings.Fields(lower)
+	if len(fields) != 3 || fields[0] != "errors" || (fields[2] != "error" && fields[2] != "errors") {
+		return false
+	}
+	for _, digit := range fields[1] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	count := strings.TrimLeft(fields[1], "0")
+	if count == "" {
+		return false
+	}
+	return (count == "1" && fields[2] == "error") || (count != "1" && fields[2] == "errors")
+}
+
+func preserveVitestFailure(output string, lines []string) string {
+	var kept []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(vitestANSISequence.ReplaceAllString(line, ""))
+		if vitestRuleOnlyLine.MatchString(trimmed) || vitestFailedTestsRule.MatchString(trimmed) || vitestNumberedRule.MatchString(trimmed) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if len(kept) == len(lines) {
+		return output
+	}
+	return strings.Join(kept, "\n")
 }
