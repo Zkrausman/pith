@@ -25,6 +25,18 @@ The native exit code is preserved when known; signals, timeout, cancellation, ov
 
 `deliveryComparison` compares the complete selected JSON packet, including its terminating newline, with an equivalent packet containing raw UTF-8 stdout and the same status and evidence references. It measures packet bytes, not model tokens or total interaction size. Failed or missing selection cannot claim a reduction; passthrough can be equal to or larger than raw output.
 
+## Codex PreToolUse adapter candidate
+
+`pre_tool_use_pith.py` is a separate, not-yet-installed Codex `PreToolUse` adapter. It rewrites only an absolute Go executable invoked as `go test -v PACKAGE`, with one literal package path. It does not interpret shell syntax. The rewritten adapter preserves the inherited working directory, environment, stdin, stderr, and process group while running the command once.
+
+TTY descriptors or descriptor inspection errors execute the original executable directly. For noninteractive runs, stdout is buffered for at most two seconds and one MiB. Deadline or overflow flushes the captured prefix and switches once to exact raw stdout relay. Completed successful output is sent to `pith pi transform` with telemetry disabled; the adapter selects only a shorter `tests` parser result that retains the complete `PASS` and package `ok` summary. Native failures, diagnostic output, malformed results, timeouts, and other fidelity failures return native stdout and status. This intentional buffering delays eligible stdout while compression is evaluated. The adapter is a narrow command profile, not complete Codex command coverage; detached descendants and current app cancellation behavior still require app-level validation.
+
+The hook configuration will need an absolute trusted Python interpreter, adapter path, and Pith binary path. The separate `pith --hooks` installer and normal Codex trust/adoption flow are not part of this runtime candidate. Its fake-only gates are:
+
+```sh
+python3 -B -m unittest -v test_pre_tool_use_pith.py
+```
+
 ## Focused tests
 
 Run from this directory:
