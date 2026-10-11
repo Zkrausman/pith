@@ -20,13 +20,15 @@ func TestOptimizeHookSelectsValidatedGoVerboseSuccess(t *testing.T) {
 	command := "/toolchain/go/bin/go test -v ./pkg/telemetry"
 	output := "=== RUN   TestParent\n" +
 		"=== RUN   TestParent/ErrorWord\n" +
+		"    --- PASS: TestParent/ErrorWord (0.00s)\n" +
 		"=== RUN   TestParent/FailWord\n" +
-		"--- PASS: TestParent/ErrorWord (0.00s)\n" +
-		"--- PASS: TestParent/FailWord (17µs)\n" +
+		"    --- PASS: TestParent/FailWord (17µs)\n" +
 		"--- PASS: TestParent (1m2.5s)\n" +
+		"=== RUN   TestStandaloneError\n" +
+		"--- PASS: TestStandaloneError (0.03s)\n" +
 		"PASS\n" +
-		"ok  pith/pkg/telemetry 1.206s\n"
-	want := "PASS\nok  pith/pkg/telemetry 1.206s"
+		"ok  \tpith/pkg/telemetry\t1.206s\n"
+	want := "PASS\nok  \tpith/pkg/telemetry\t1.206s"
 	got := OptimizeHook(HookRequest{Command: command, Output: output, ExitCode: 0, TelemetryEnabled: false})
 	if got.Output != want || got.Parser != "tests" || got.Passthrough || got.MinimizationStrategy != "parser:tests" {
 		t.Fatalf("validated Go success was not selected: %#v", got)

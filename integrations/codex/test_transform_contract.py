@@ -17,14 +17,16 @@ COMMAND = f"{GO} test -v ./pkg/telemetry"
 RAW = (
     b"=== RUN   TestParent\n"
     b"=== RUN   TestParent/ErrorWord\n"
+    b"    --- PASS: TestParent/ErrorWord (0.00s)\n"
     b"=== RUN   TestParent/FailWord\n"
-    b"--- PASS: TestParent/ErrorWord (0.00s)\n"
-    b"--- PASS: TestParent/FailWord (0.01s)\n"
+    b"    --- PASS: TestParent/FailWord (0.01s)\n"
     b"--- PASS: TestParent (0.02s)\n"
+    b"=== RUN   TestStandaloneError\n"
+    b"--- PASS: TestStandaloneError (0.03s)\n"
     b"PASS\n"
-    b"ok  pith/pkg/telemetry 1.206s\n"
+    b"ok  \tpith/pkg/telemetry\t1.206s\n"
 )
-SELECTED = b"PASS\nok  pith/pkg/telemetry 1.206s"
+SELECTED = b"PASS\nok  \tpith/pkg/telemetry\t1.206s"
 
 
 class CompiledTransformContractTests(unittest.TestCase):
@@ -58,13 +60,22 @@ class CompiledTransformContractTests(unittest.TestCase):
 
     def test_diagnostic_output_falls_back_before_transform(self) -> None:
         diagnostic = RAW.replace(b"--- PASS:", b"warning: fixture diagnostic\n--- PASS:", 1)
+        indented_diagnostic = RAW.replace(b"=== RUN   TestParent\n", b"=== RUN   TestParent\n    warning: fixture diagnostic\n", 1)
         self.assertIsNone(self.transform(diagnostic))
+        self.assertIsNone(self.transform(indented_diagnostic))
 
     def test_duplicate_or_malformed_output_falls_back(self) -> None:
-        duplicate = RAW.replace(b"PASS\nok", b"PASS\nPASS\nok", 1)
+        duplicate = RAW.replace(
+            b"    --- PASS: TestParent/ErrorWord (0.00s)\n",
+            b"    --- PASS: TestParent/ErrorWord (0.00s)\n"
+            b"    --- PASS: TestParent/ErrorWord (0.00s)\n",
+            1,
+        )
         malformed = RAW.replace(b"0.01s", b"NaNs", 1)
+        malformed_prefix = RAW.replace(b"ok  \tpith/", b"xok  \tpith/", 1)
         self.assertIsNone(self.transform(duplicate))
         self.assertIsNone(self.transform(malformed))
+        self.assertIsNone(self.transform(malformed_prefix))
 
 
 if __name__ == "__main__":

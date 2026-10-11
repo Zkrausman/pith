@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	goVerboseRunLine  = regexp.MustCompile(`^=== RUN +([^[:space:]]+)$`)
-	goVerbosePassLine = regexp.MustCompile(`^--- PASS: ([^[:space:]]+) \(([^()]*)\)$`)
-	goVerboseOKLine   = regexp.MustCompile(`^ok {2,}([^[:space:]]+) ([^[:space:]]+)$`)
-	goVerbosePackage  = regexp.MustCompile(`(?:\.|\./[A-Za-z0-9_./-]+|[A-Za-z0-9_./-]+)\z`)
+	goVerboseRunLine  = regexp.MustCompile(`\A=== RUN +([^[:space:]]+)\z`)
+	goVerbosePassLine = regexp.MustCompile(`\A--- PASS: ([^[:space:]]+) \(([^()]*)\)\z`)
+	goVerboseOKLine   = regexp.MustCompile(`\Aok[ \t]{2,}([^[:space:]]+)[ \t]+([^[:space:]]+)\z`)
+	goVerbosePackage  = regexp.MustCompile(`\A(?:\.|\./[A-Za-z0-9_./-]+|[A-Za-z0-9_./-]+)\z`)
 	goVerboseDuration = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]+)?(?:h|m|s|ms|us|µs|ns))+$`)
 )
 
@@ -44,17 +44,28 @@ func ValidatedGoVerboseSuccess(command, output string, exitCode int) (string, bo
 		if strings.HasSuffix(line, "\r") {
 			line = strings.TrimSuffix(line, "\r")
 		}
-		if line == "" || strings.TrimSpace(line) != line {
+		if line == "" {
 			return "", false
 		}
 		if match := goVerboseRunLine.FindStringSubmatch(line); match != nil {
-			if _, exists := runs[match[1]]; exists || passCount != 0 {
+			if packageLine != "" {
+				return "", false
+			}
+			if _, exists := runs[match[1]]; exists {
 				return "", false
 			}
 			runs[match[1]] = struct{}{}
 			continue
 		}
-		if match := goVerbosePassLine.FindStringSubmatch(line); match != nil {
+		passLine := line
+		if strings.HasPrefix(line, " ") {
+			indent := len(line) - len(strings.TrimLeft(line, " "))
+			if indent > 64 || indent%4 != 0 {
+				return "", false
+			}
+			passLine = line[indent:]
+		}
+		if match := goVerbosePassLine.FindStringSubmatch(passLine); match != nil {
 			if packageLine != "" {
 				return "", false
 			}
