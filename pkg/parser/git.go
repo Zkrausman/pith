@@ -23,6 +23,10 @@ func getGitSubcommand(args []string) string {
 	return ""
 }
 
+// GitSubcommand reports the existing global-option-aware Git subcommand for
+// direct argv callers. It does not interpret shell strings.
+func GitSubcommand(args []string) string { return getGitSubcommand(args) }
+
 // GitStatusParser (Existing)
 type GitStatusParser struct{}
 
@@ -46,20 +50,29 @@ func (g *GitStatusParser) Parse(output string) string {
 		if trimmed == "" {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "(use ") ||
-			strings.HasPrefix(trimmed, "On branch") || strings.HasPrefix(trimmed, "Your branch") ||
-			strings.HasPrefix(trimmed, "nothing to commit") || strings.HasPrefix(trimmed, "no changes added") ||
-			strings.HasPrefix(trimmed, "Changes not staged") || strings.HasPrefix(trimmed, "Changes to be committed") ||
-			strings.HasPrefix(trimmed, "Untracked files") ||
-			strings.HasPrefix(trimmed, "Everything up-to-date") ||
-			strings.HasPrefix(trimmed, "To ") {
+		// Git's help rows have exactly two leading spaces. Do not classify every
+		// indented line after TrimSpace: status rows can be filenames like "To ..."
+		// or "(use ...".
+		isGuidance := strings.HasPrefix(line, "  (use ")
+		isStructuralHeader := false
+		if line == trimmed {
+			isStructuralHeader = strings.HasPrefix(line, "On branch") || strings.HasPrefix(line, "Your branch") ||
+				strings.HasPrefix(line, "nothing to commit") || strings.HasPrefix(line, "no changes added") ||
+				strings.HasPrefix(line, "Changes not staged") || strings.HasPrefix(line, "Changes to be committed") ||
+				strings.HasPrefix(line, "Untracked files") || strings.HasPrefix(line, "Everything up-to-date") ||
+				strings.HasPrefix(line, "To ")
+		}
+		if isGuidance || isStructuralHeader {
 			recognizedContext = true
 			continue
 		}
-		if strings.Contains(trimmed, "->") { // push output only with human context
-			continue
+		// A literal arrow is part of Git's rename and symlink paths. Keep that
+		// original row so both sides of the path and their whitespace survive.
+		if strings.Contains(line, "->") {
+			result = append(result, line)
+		} else {
+			result = append(result, trimmed)
 		}
-		result = append(result, trimmed)
 	}
 
 	// Empty or unsupported capture cannot establish command success. Keep
@@ -69,7 +82,9 @@ func (g *GitStatusParser) Parse(output string) string {
 	}
 
 	if len(result) > 20 {
-		return strings.Join(result[:10], "\n") + "\n...\n" + strings.Join(result[len(result)-10:], "\n")
+		// The omitted middle can contain a rename or other changed path. Keep
+		// every status row when the compact format would hide meaningful state.
+		return output
 	}
 	return strings.Join(result, "\n")
 }

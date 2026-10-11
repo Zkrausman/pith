@@ -75,10 +75,10 @@ This page controls **Middle-Out Truncation** and analytics precision.
 ---
 
 ## 🛠️ Supported Parsers
-Pith currently optimizes the following commands:
+The parser registry contains handlers for these commands and output profiles:
 - **Git:** `status`, `log`, `diff`, `branch`, and **composite commands** (e.g., `git status & git log`)
 - **PowerShell:** `Get-Content` (JSON minification & truncation), `Get-ChildItem` (ls/dir minification)
-- **Filesystem:** `ls`, `dir`, `find`, `tree`, `du`, `where`
+- **Filesystem:** `ls` and `dir` output currently passes through unchanged because the parser cannot establish the invocation's listing and quoting profile; `find`, `tree`, `du`, `where`
 - **Text:** `grep`, `rg`, `cat`, `type` (JSON/XML/CSS/HTML minification)
 - **Infra/Dev:** `docker ps`, `npm list`, `pip list`, `npm test`, `go test`, `pytest`, `vitest`, `bd` (Beads), `gh` (GitHub), `env`, `set`
 
@@ -133,16 +133,13 @@ Date:   Sun Mar 15 22:30:00 2026 -0400
 ```
 
 ### 3. `ls -l`
-**Raw Output (~50 tokens):**
+The current `ls`/`dir` parser preserves output unchanged. Its parser interface does not carry a proven listing and quoting profile, so row-shaped text is not summarized based on appearance alone.
+
+**Output (unchanged):**
 ```text
 total 8
 -rw-r--r--  1 user  group  123 Mar 15 22:30 main.go
 -rw-r--r--  1 user  group  456 Mar 15 22:31 README.md
-```
-
-**Pith Output (~10 tokens):**
-```text
-main.go README.md
 ```
 
 ---

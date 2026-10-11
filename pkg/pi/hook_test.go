@@ -10,9 +10,18 @@ import (
 
 func TestOptimizeHookUsesPithParser(t *testing.T) {
 	out := "On branch main\n\nChanges not staged for commit:\n\tmodified: pkg/pi/hook.go\n"
-	got := OptimizeHook(HookRequest{Command: "git status", Output: strings.Repeat(out, 200)})
-	if got.Parser != "git_status" || got.Passthrough {
+	got := OptimizeHook(HookRequest{Command: "git status", Output: out})
+	if got.Parser != "git_status" || got.Passthrough || !strings.Contains(got.Output, "pkg/pi/hook.go") {
 		t.Fatalf("expected git parser, got %#v", got)
+	}
+}
+
+func TestOptimizeHookPreservesLargeGitStatus(t *testing.T) {
+	out := "On branch main\n\nChanges not staged for commit:\n\tmodified: pkg/pi/hook.go\n"
+	large := strings.Repeat(out, 200)
+	got := OptimizeHook(HookRequest{Command: "git status", Output: large})
+	if got.Parser != "" || !got.Passthrough || got.Output != large {
+		t.Fatalf("large Git status must remain byte-identical passthrough: %#v", got)
 	}
 }
 

@@ -474,14 +474,12 @@ func TestSourceParser_AllBranches(t *testing.T) {
 		t.Error("Expected ls NOT to match SourceParser")
 	}
 
-	// Parse with block comments (using a long one to trigger stripping)
+	// Block-comment markers are ambiguous without a source language lexer;
+	// preserve the complete capture instead of risking removal of executable code.
 	code := "/* this is a very long block comment that exceeds the one hundred character threshold to ensure that it is actually stripped by the source parser as intended by this specific test case */\nfoo := 1 // inline\n/* start block\n * middle\n */\nbar := 2"
 	output := p.Parse(code)
-	if strings.Contains(output, "very long block comment") {
-		t.Errorf("Expected long block comment to be stripped, got %s", output)
-	}
-	if !strings.Contains(output, "bar") {
-		t.Errorf("Expected bar to remain, got %s", output)
+	if output != code {
+		t.Errorf("Expected ambiguous source to remain byte-for-byte intact, got %q", output)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"pith/pkg/parser"
 	"pith/pkg/runner"
 	"pith/pkg/telemetry"
 )
@@ -166,6 +167,86 @@ func TestCodexWrapperFallbackStoresEqualCounts(t *testing.T) {
 	if err != nil || len(records) != 1 || records[0].OriginalTokens != records[0].CompressedTokens || !records[0].IsPassthrough || records[0].DecisionReason != telemetry.DecisionProtectedPassthrough {
 		encoded, _ := json.Marshal(records)
 		t.Fatalf("fallback accounting: %s, %v", encoded, err)
+	}
+}
+
+func TestCodexWrapperExecutionMetadataIsPrivateAndTruthful(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("owner-only telemetry permission checks are Unix-specific")
+	}
+	storage := filepath.Join(t.TempDir(), "private")
+	setWrapperRecorderEnvironment(t, storage)
+	for _, request := range []string{
+		`{"kind":"execution","family":"rg","parser":"grep","originalRunes":80,"deliveredRunes":10,"durationMs":12,"outcome":"transformed"}`,
+		`{"kind":"execution","family":"git status","parser":"","originalRunes":10,"deliveredRunes":10,"durationMs":20,"outcome":"raw_fallback"}`,
+	} {
+		if err := runWrapperRecorderForTest(t, request); err != nil {
+			t.Fatalf("record execution metadata: %v", err)
+		}
+	}
+	tel, err := telemetry.NewTelemetryWithPath(filepath.Join(storage, "pith.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tel.Close()
+	records, err := tel.GetRecentExecutions(10, telemetry.SourceCodexWrapperPrivate)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("private wrapper rows: %#v, %v", records, err)
+	}
+	byFamily := map[string]telemetry.ExecutionRecord{}
+	for _, record := range records {
+		byFamily[record.Command] = record
+		if record.Source != telemetry.SourceCodexWrapperPrivate || record.Harness != "codex" ||
+			record.Model != "unknown" || record.InputCostPerMillion != nil ||
+			record.OriginalContent != "" || record.CompressedContent != "" {
+			t.Fatalf("execution metadata retained a nonaggregate detail: %#v", record)
+		}
+	}
+	transformed := byFamily["rg"]
+	if transformed.ParserUsed != "grep" || transformed.DecisionReason != telemetry.DecisionTransformed || transformed.IsPassthrough ||
+		transformed.OriginalTokens <= transformed.CompressedTokens {
+		t.Fatalf("transformed execution metadata is inaccurate: %#v", transformed)
+	}
+	fallback := byFamily["git status"]
+	if fallback.ParserUsed != "" || fallback.DecisionReason != telemetry.DecisionProtectedPassthrough || !fallback.IsPassthrough ||
+		fallback.OriginalTokens != fallback.CompressedTokens {
+		t.Fatalf("raw fallback must be truthful passthrough accounting: %#v", fallback)
+	}
+	var exported bytes.Buffer
+	if err := tel.ExportJSONL(&exported); err != nil {
+		t.Fatal(err)
+	}
+	if exported.Len() != 0 {
+		t.Fatalf("private wrapper execution leaked into export: %s", exported.String())
+	}
+}
+
+func TestCodexWrapperExecutionLabelsMatchRegisteredParsers(t *testing.T) {
+	for _, candidate := range parser.GetAllParsers() {
+		if !codexParserNameAllowed(candidate.Name()) {
+			t.Errorf("registered parser %q is rejected by wrapper metadata validation", candidate.Name())
+		}
+	}
+	if codexParserNameAllowed("parser-sentinel-secret") {
+		t.Fatal("unknown parser label must be rejected")
+	}
+}
+
+func TestCodexWrapperExecutionRejectsUnregisteredLabelsBeforeStorage(t *testing.T) {
+	storage := filepath.Join(t.TempDir(), "must-not-exist")
+	setWrapperRecorderEnvironment(t, storage)
+	for _, request := range []string{
+		`{"kind":"execution","family":"rg","parser":"parser-sentinel-secret","originalRunes":8,"deliveredRunes":4,"durationMs":1,"outcome":"transformed"}`,
+		`{"kind":"execution","family":"command-sentinel-secret","parser":"grep","originalRunes":8,"deliveredRunes":4,"durationMs":1,"outcome":"transformed"}`,
+		`{"kind":"execution","family":"rg","parser":"grep","originalRunes":8,"deliveredRunes":8,"durationMs":1,"outcome":"transformed"}`,
+		`{"kind":"execution","family":"rg","parser":"grep","originalRunes":8,"deliveredRunes":4,"durationMs":1,"outcome":"raw_fallback"}`,
+	} {
+		if err := runWrapperRecorderForTest(t, request); err == nil {
+			t.Errorf("invalid execution metadata was accepted: %s", request)
+		}
+	}
+	if _, err := os.Stat(storage); !os.IsNotExist(err) {
+		t.Fatalf("invalid execution metadata created storage: %v", err)
 	}
 }
 

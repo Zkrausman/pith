@@ -6,12 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
 	"pith/pkg/advisor"
 	"pith/pkg/anomaly"
 	"pith/pkg/config"
@@ -22,10 +28,6 @@ import (
 	"pith/pkg/runner"
 	"pith/pkg/selfupdate"
 	"pith/pkg/telemetry"
-	"runtime"
-	"sort"
-	"strings"
-	"time"
 )
 
 //go:embed integrations/codex/pre_tool_use_pith.py
@@ -48,7 +50,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.4.0"
+const version = "v3.5.0"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
@@ -59,6 +61,7 @@ const (
 type codexWrapperRecordRequest struct {
 	Kind           string `json:"kind"`
 	Family         string `json:"family"`
+	Parser         string `json:"parser"`
 	CaptureOutcome string `json:"captureOutcome"`
 	ElapsedMs      *int64 `json:"elapsedMs"`
 	Selection      string `json:"selection"`
@@ -390,9 +393,10 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	var capture *telemetry.CodexCaptureObservation
 	var proposalFamily string
 	var legacy *codexWrapperRecordRequest
+	var privateExecution bool
 	switch request.Kind {
 	case "proposal":
-		if request.Family == "" || request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
+		if request.Family == "" || request.Parser != "" || request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
 			request.OriginalBytes != nil || request.DeliveredBytes != nil || request.OriginalRunes != nil ||
 			request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
 			return fmt.Errorf("wrapper proposal request is invalid")
@@ -401,8 +405,40 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("wrapper proposal family is invalid")
 		}
 		proposalFamily = request.Family
+	case "execution":
+		if request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
+			request.OriginalBytes != nil || request.DeliveredBytes != nil ||
+			request.Family == "" || !telemetry.IsCodexObservationFamilyAllowed(request.Family) {
+			return fmt.Errorf("wrapper execution metadata is invalid")
+		}
+		if request.Parser != "" && !codexParserNameAllowed(request.Parser) {
+			return fmt.Errorf("wrapper parser name is invalid")
+		}
+		if request.OriginalRunes == nil || request.DeliveredRunes == nil || request.DurationMs == nil {
+			return fmt.Errorf("wrapper execution counts are required")
+		}
+		originalRunes, deliveredRunes, durationMs := *request.OriginalRunes, *request.DeliveredRunes, *request.DurationMs
+		if originalRunes < 0 || originalRunes > codexWrapperRecordMaxRunes ||
+			deliveredRunes < 0 || deliveredRunes > codexWrapperRecordMaxRunes ||
+			durationMs < 0 || durationMs > codexWrapperRecordMaxDuration {
+			return fmt.Errorf("wrapper execution counts are out of range")
+		}
+		switch request.Outcome {
+		case "transformed":
+			if request.Parser == "" || deliveredRunes >= originalRunes {
+				return fmt.Errorf("transformed wrapper metadata is inconsistent")
+			}
+		case "raw_fallback":
+			if request.Parser != "" || deliveredRunes != originalRunes {
+				return fmt.Errorf("raw wrapper metadata is inconsistent")
+			}
+		default:
+			return fmt.Errorf("wrapper execution outcome is invalid")
+		}
+		legacy = &request
+		privateExecution = true
 	case "capture":
-		if request.Family != "" || request.OriginalRunes != nil || request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
+		if request.Family != "" || request.Parser != "" || request.OriginalRunes != nil || request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
 			return fmt.Errorf("wrapper capture request is invalid")
 		}
 		capture = &telemetry.CodexCaptureObservation{
@@ -414,7 +450,7 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 		}
 	case "":
 		// Continue to accept requests from an already installed v3.3.x adapter.
-		if request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
+		if request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" || request.Parser != "" ||
 			request.OriginalBytes != nil || request.DeliveredBytes != nil || request.Family != "" {
 			return fmt.Errorf("wrapper telemetry request is invalid")
 		}
@@ -469,14 +505,22 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	decision := telemetry.DecisionTransformed
 	passthrough := false
 	parserName := "tests"
-	if legacy.Outcome == "raw_fallback" {
+	commandFamily := "go test"
+	if privateExecution {
+		parserName = legacy.Parser
+		commandFamily = legacy.Family
+		if legacy.Outcome == "raw_fallback" {
+			decision = telemetry.DecisionProtectedPassthrough
+			passthrough = true
+		}
+	} else if legacy.Outcome == "raw_fallback" {
 		decision = telemetry.DecisionProtectedPassthrough
 		passthrough = true
 		parserName = ""
 	}
 	return tel.Record(telemetry.ExecutionRecord{
 		Timestamp:        time.Now().UTC(),
-		Command:          "go test",
+		Command:          commandFamily,
 		OriginalTokens:   runner.EstimateTokensFromRuneCount(originalRunes, 4),
 		CompressedTokens: runner.EstimateTokensFromRuneCount(deliveredRunes, 4),
 		DurationMs:       durationMs,
@@ -486,6 +530,15 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 		Harness:          "codex",
 		DecisionReason:   decision,
 	})
+}
+
+func codexParserNameAllowed(name string) bool {
+	for _, candidate := range parser.GetAllParsers() {
+		if candidate.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func runConfig(cmd *cobra.Command, args []string) error {
@@ -693,7 +746,7 @@ func printCodexObservationSummary(cmd *cobra.Command, summary telemetry.CodexObs
 		}
 	}
 	if summary.CaptureRecords > 0 {
-		cmd.Println("Go test capture outcomes:")
+		cmd.Println("Codex wrapper capture outcomes:")
 		for _, outcome := range []string{
 			telemetry.CodexCaptureComplete, telemetry.CodexCaptureDeadline,
 			telemetry.CodexCaptureCap, telemetry.CodexCaptureIncomplete,
@@ -792,9 +845,18 @@ func runHook(cmd *cobra.Command, args []string) error {
 	isPassthrough := true
 	if p != nil {
 		compressed = p.Parse(originalOutput)
-		parserUsed = p.Name()
-		isPassthrough = false
-		reason = telemetry.DecisionTransformed
+		if compressed == originalOutput && identityParserNames[p.Name()] {
+			// These legacy parsers can return the exact source unchanged. Keep
+			// that provenance as raw; later middle-out truncation is classified
+			// separately below.
+			p = nil
+			compressed = originalOutput
+			reason = telemetry.DecisionUnsupportedParser
+		} else {
+			parserUsed = p.Name()
+			isPassthrough = false
+			reason = telemetry.DecisionTransformed
+		}
 	} else {
 		compressed = originalOutput
 	}
@@ -827,6 +889,10 @@ func runHook(cmd *cobra.Command, args []string) error {
 		SystemMessage: fmt.Sprintf("Output optimized by Pith (parser: %s, tokens saved: %d, truncated: %v)", parserUsed, savedTokens, wasTruncated),
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(output)
+}
+
+var identityParserNames = map[string]bool{
+	"source": true, "ls": true, "get-content": true,
 }
 
 func runHookPreTool(cmd *cobra.Command, args []string) error {

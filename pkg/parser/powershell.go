@@ -76,10 +76,71 @@ type GetContentParser struct{}
 func (gc *GetContentParser) Name() string { return "get-content" }
 
 func (gc *GetContentParser) CanParse(cmd string, args []string) bool {
-	// Pattern: powershell -Command "Get-Content ..."
-	// Pattern: Get-Content -Path ...
-	fullCmd := strings.Join(append([]string{cmd}, args...), " ")
-	return strings.Contains(fullCmd, "Get-Content") || strings.Contains(fullCmd, "cat") || strings.Contains(fullCmd, "type")
+	// Direct command identities include PowerShell's common Get-Content aliases.
+	if MatchCommand(cmd, "Get-Content") || MatchCommand(cmd, "cat") || MatchCommand(cmd, "type") {
+		return true
+	}
+
+	if MatchCommand(cmd, "powershell") || MatchCommand(cmd, "pwsh") {
+		script, ok := commandAfterSwitch(args, "-Command", "-c")
+		return ok && isSimpleContentCommand(script, true, true, true)
+	}
+	if MatchCommand(cmd, "cmd") {
+		script, ok := commandAfterSwitch(args, "/c", "/k")
+		return ok && isSimpleContentCommand(unwrapCmdCommandQuotes(script), false, false, true)
+	}
+	return false
+}
+
+func unwrapCmdCommandQuotes(script string) string {
+	script = strings.TrimSpace(script)
+	if len(script) >= 2 && script[0] == '"' && script[len(script)-1] == '"' {
+		return script[1 : len(script)-1]
+	}
+	return script
+}
+
+func commandAfterSwitch(args []string, switches ...string) (string, bool) {
+	for i, arg := range args {
+		key, inlineValue, hasInlineValue := strings.Cut(arg, ":")
+		for _, candidate := range switches {
+			if !strings.EqualFold(key, candidate) {
+				continue
+			}
+			if hasInlineValue {
+				if inlineValue == "" {
+					return "", false
+				}
+				return strings.Join(append([]string{inlineValue}, args[i+1:]...), " "), true
+			}
+			if i+1 >= len(args) {
+				return "", false
+			}
+			return strings.Join(args[i+1:], " "), true
+		}
+	}
+	return "", false
+}
+
+// isSimpleContentCommand only accepts a command at the start of a single
+// command string. Without a shell parser, compound commands and ambiguous
+// operator syntax must stay on the regular parser path.
+func isSimpleContentCommand(script string, allowPowerShellCallOperator, allowContentAliases, allowType bool) bool {
+	script = strings.TrimSpace(script)
+	if allowPowerShellCallOperator && strings.HasPrefix(script, "&") {
+		script = strings.TrimSpace(strings.TrimPrefix(script, "&"))
+	}
+	if script == "" || strings.ContainsAny(script, ";|&<>$(){}\r\n`\x00") {
+		return false
+	}
+	command := script
+	if i := strings.IndexAny(command, " \t"); i >= 0 {
+		command = command[:i]
+	}
+	if allowContentAliases && (strings.EqualFold(command, "Get-Content") || strings.EqualFold(command, "cat")) {
+		return true
+	}
+	return allowType && strings.EqualFold(command, "type")
 }
 
 func (gc *GetContentParser) Parse(output string) string {

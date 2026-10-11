@@ -14,6 +14,7 @@ import pre_tool_use_pith as adapter
 PITH_BINARY = os.environ.get("PITH_GO_SUCCESS_TEST_BINARY", "")
 GO = "/home/zack/Documents/Codex/2026-10-10/task/pith-go1261-setup-xGlpXdZS/go/bin/go"
 COMMAND = f"{GO} test -v ./pkg/telemetry"
+ARGV = [GO, "test", "-v", "./pkg/telemetry"]
 RAW = (
     b"=== RUN   TestParent\n"
     b"=== RUN   TestParent/ErrorWord\n"
@@ -40,23 +41,22 @@ class CompiledTransformContractTests(unittest.TestCase):
 
     def transform(self, raw: bytes) -> bytes | None:
         response = adapter._run_transform(
-            PITH_BINARY, COMMAND, raw, time.monotonic() + adapter.TRANSFORM_SECONDS,
+            PITH_BINARY, COMMAND, raw, time.monotonic() + adapter.TRANSFORM_SECONDS, argv=ARGV,
         )
         if response is None:
             return None
-        selected = adapter._selected_output(raw, response)
-        return selected
+        return adapter._selected_output(raw, response, ARGV)
 
     def test_compiled_transform_selects_nested_success_summary(self) -> None:
         response = adapter._run_transform(
-            PITH_BINARY, COMMAND, RAW, time.monotonic() + adapter.TRANSFORM_SECONDS,
+            PITH_BINARY, COMMAND, RAW, time.monotonic() + adapter.TRANSFORM_SECONDS, argv=ARGV,
         )
         self.assertIsNotNone(response, "compiled Pith transform did not return a valid response")
         assert response is not None
         payload = json.loads(response)
         self.assertEqual(payload.get("parser"), "tests")
         self.assertIs(payload.get("passthrough"), False)
-        self.assertEqual(adapter._selected_output(RAW, response), SELECTED)
+        self.assertEqual(adapter._selected_output(RAW, response, ARGV), (SELECTED, "tests"))
 
     def test_diagnostic_output_falls_back_before_transform(self) -> None:
         diagnostic = RAW.replace(b"--- PASS:", b"warning: fixture diagnostic\n--- PASS:", 1)

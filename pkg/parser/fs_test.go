@@ -21,11 +21,8 @@ func TestLsParser(t *testing.T) {
 -rw-r--r--  1 user  group  456 Mar 15 22:31 README.md
 `
 	output := p.Parse(input)
-	if !strings.Contains(output, "main.go") || !strings.Contains(output, "123") || strings.Contains(output, "-rw-r--r--") {
-		t.Errorf("Expected filenames and sizes, and NO modes in output, got: %s", output)
-	}
-	if strings.Contains(output, "total") || strings.Contains(output, "user") {
-		t.Errorf("Output contains redundant metadata: %s", output)
+	if output != input {
+		t.Errorf("without a proven listing profile, LsParser must preserve output exactly: got %q, want %q", output, input)
 	}
 }
 

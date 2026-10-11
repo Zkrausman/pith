@@ -289,10 +289,19 @@ func (r *Runner) run(args []string, opts runOptions) error {
 
 	if p != nil {
 		// Pass fullOutput to parser instead of just stdout
-		finalOutput = p.Parse(fullOutput)
-		parserUsed = p.Name()
-		isPassthrough = false
-		reason = telemetry.DecisionTransformed
+		parsedOutput := p.Parse(fullOutput)
+		if parsedOutput == fullOutput {
+			// A parser's identity fallback is not a transformation. Keep parser
+			// provenance out of telemetry while allowing the independent
+			// middle-out truncation policy below to run as before.
+			reason = telemetry.DecisionUnsupportedParser
+			finalOutput = fullOutput
+		} else {
+			finalOutput = parsedOutput
+			parserUsed = p.Name()
+			isPassthrough = false
+			reason = telemetry.DecisionTransformed
+		}
 	} else {
 		finalOutput = fullOutput
 	}
