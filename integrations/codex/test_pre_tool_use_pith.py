@@ -1,9 +1,11 @@
-import hashlib
 import importlib.util
+import io
 import json
 import os
 import signal
+import shlex
 import sys
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -25,15 +27,8 @@ VALID = (
     b"ok pith/pkg/parser 0.001s\n"
 )
 SELECTED = b"PASS\nok pith/pkg/parser 0.001s"
-HEAD = "a" * 40
-TREE = "b" * 40
-
-
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _fake(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"#!{sys.executable}\n" + body, encoding="utf-8")
     path.chmod(0o700)
     return path.resolve()
@@ -41,31 +36,12 @@ def _fake(path: Path, body: str) -> Path:
 
 class AdapterTests(TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="pith-profile-fakes-")
+        self.temp = tempfile.TemporaryDirectory(prefix="pith-adapter-fakes-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.go_counter = self.root / "go-invocations.txt"
-        self.git = _fake(
-            self.root / "git",
-            """
-import os, sys
-args = sys.argv[1:]
-if 'rev-parse' in args:
-    print(os.environ['FAKE_GIT_ROOT'])
-    print(os.environ['FAKE_GIT_HEAD'])
-    print(os.environ['FAKE_GIT_TREE'])
-elif 'status' in args:
-    if os.environ.get('FAKE_GIT_DIRTY_BYTES'):
-        for _ in range(int(os.environ['FAKE_GIT_DIRTY_BYTES']) // 4096):
-            sys.stdout.buffer.write(b'x' * 4096)
-    else:
-        sys.stdout.write(os.environ.get('FAKE_GIT_DIRTY', ''))
-else:
-    raise SystemExit(2)
-""",
-        )
         self.go = _fake(
-            self.root / "go",
+            self.root / "go suite" / "go",
             """
 import json, os, signal, sys, time
 counter = os.environ.get('FAKE_GO_COUNTER')
@@ -105,10 +81,14 @@ sys.exit(int(os.environ.get('FAKE_GO_STATUS', '0')))
 """ % (VALID, VALID, VALID, VALID, VALID, VALID),
         )
         self.pith = _fake(
-            self.root / "pith",
+            self.root / "pith transform",
             """
 import json, os, signal, sys, time
 request = json.load(sys.stdin)
+started = os.environ.get('FAKE_PITH_STARTED_FILE')
+if started:
+    with open(started, 'w', encoding='ascii') as f:
+        f.write('started')
 log = os.environ.get('FAKE_PITH_LOG')
 if log:
     with open(log, 'w', encoding='utf-8') as f:
@@ -122,6 +102,8 @@ elif mode == 'malformed':
     sys.stdout.write('{')
 elif mode == 'huge_output':
     sys.stdout.write('x' * (2 * 1024 * 1024))
+elif mode == 'deep_response':
+    sys.stdout.write('[' * 2000 + '0' + ']' * 2000)
 else:
     selected = 'PASS\\nok pith/pkg/parser 0.001s'
     if mode == 'diagnostic':
@@ -130,43 +112,20 @@ else:
         selected = request['output']
     parser = 'go' if mode == 'wrong_parser' else 'tests'
     print(json.dumps({'output': selected, 'parser': parser, 'passthrough': False}))
+sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS', '0')))
 """,
         )
         self.pith_log = self.root / "pith-request.json"
+        self.pith_started = self.root / "pith-started.txt"
         self.context_file = self.root / "inherited-context.json"
-        self.profile_path = self.root / "codex-profile.json"
-        self.profile = self._write_profile()
-
-    def _write_profile(self, **overrides):
-        cwd = os.path.realpath(os.getcwd())
-        profile = {
-            "schemaVersion": 1,
-            "cwd": cwd,
-            "repoRoot": cwd,
-            "sourceHead": HEAD,
-            "sourceTree": TREE,
-            "package": "./pkg/parser",
-            "go": {"path": str(self.go), "sha256": _sha(self.go)},
-            "pith": {"path": str(self.pith), "sha256": _sha(self.pith)},
-            "git": {"path": str(self.git), "sha256": _sha(self.git)},
-            "python": {"path": os.path.realpath(sys.executable), "sha256": _sha(Path(sys.executable).resolve())},
-            "adapter": {"path": str(SCRIPT), "sha256": _sha(SCRIPT)},
-        }
-        profile.update(overrides)
-        self.profile_path.write_text(json.dumps(profile, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-        self.profile_path.chmod(0o600)
-        self.profile = profile
-        self.profile_sha256 = _sha(self.profile_path)
-        return profile
+        self.pith_binary = str(self.pith)
 
     def _env(self, **values):
         env = os.environ.copy()
         env.update({
-            "FAKE_GIT_ROOT": self.profile["repoRoot"],
-            "FAKE_GIT_HEAD": HEAD,
-            "FAKE_GIT_TREE": TREE,
             "FAKE_GO_COUNTER": str(self.go_counter),
             "FAKE_PITH_LOG": str(self.pith_log),
+            "FAKE_PITH_STARTED_FILE": str(self.pith_started),
         })
         env.update({key: str(value) for key, value in values.items()})
         return env
@@ -189,14 +148,21 @@ else:
         with mock.patch.dict(os.environ, env, clear=True):
             status = pith_adapter.run_native(
                 [str(self.go), "test", "-v", "./pkg/parser"],
-                str(self.profile_path), self.profile_sha256,
+                self.pith_binary,
                 stdout_fd=123, writer=writer,
                 warning_writer=lambda message, native: warnings.append((message, native)),
                 **kwargs,
             )
         return status, bytes(packets), writes, warnings
 
-    def test_profile_binds_executable_package_adapter_pith_and_cwd(self):
+    def _call_hook(self, raw: bytes):
+        output = io.StringIO()
+        fake_stdin = mock.Mock(buffer=io.BytesIO(raw))
+        with mock.patch.object(sys, "stdin", fake_stdin), mock.patch.object(sys, "stdout", output):
+            status = pith_adapter.main(["--pith-binary", self.pith_binary])
+        return status, output.getvalue()
+
+    def test_exact_command_shape_preserves_options_and_paths_with_spaces(self):
         payload = {
             "tool_name": "Bash",
             "tool_input": {
@@ -207,95 +173,83 @@ else:
                 "workdir": "/ignored/by-hook",
             },
         }
-        result = pith_adapter.rewrite_hook_input(payload, str(self.profile_path), self.profile_sha256)
+        result = pith_adapter.rewrite_hook_input(payload, self.pith_binary)
         specific = result["hookSpecificOutput"]
         self.assertEqual(specific["hookEventName"], "PreToolUse")
         self.assertEqual(
             set(specific["updatedInput"]),
             {"command", "tty", "yield_time_ms", "timeout_ms", "workdir"},
         )
-        self.assertIn("--profile-sha256", specific["updatedInput"]["command"])
+        wrapper = shlex.split(specific["updatedInput"]["command"])
+        self.assertEqual(wrapper[:4], [os.path.realpath(sys.executable), "-I", "-S", str(SCRIPT)])
+        self.assertIn("--pith-binary", wrapper)
+        self.assertEqual(wrapper[wrapper.index("--pith-binary") + 1], self.pith_binary)
+        self.assertIn(str(self.pith), wrapper)
+        self.assertIn(str(self.go), wrapper)
         for option in ("tty", "yield_time_ms", "timeout_ms", "workdir"):
             self.assertEqual(specific["updatedInput"][option], payload["tool_input"][option])
 
         for command in (
-            f"/usr/bin/go test -v ./pkg/parser",
-            f"{self.go} test -v ./pkg/other",
             f"{self.go} test -v ./...",
             f"{self.go} test -run TestX -v ./pkg/parser",
             f"{self.go} test -v ./pkg/parser && id",
+            f"go test -v ./pkg/parser",
+            f"{self.go} test -v -run TestAlpha ./pkg/parser",
+            f"{self.go} test -v ./pkg/parser extra",
+            f"{self.go} test -v '-flag with space'",
+            f"{self.go} test -v 'unterminated",
         ):
             with self.subTest(command=command):
                 out = pith_adapter.rewrite_hook_input(
                     {"tool_name": "Bash", "tool_input": {"command": command}},
-                    str(self.profile_path), self.profile_sha256,
+                    self.pith_binary,
                 )
                 self.assertNotIn("updatedInput", out["hookSpecificOutput"])
 
-        # Profile identities are independently pinned; changing either target
-        # digest restores the original command path without any invocation.
-        for key in ("pith", "adapter"):
-            with self.subTest(identity=key):
-                identity = dict(self.profile[key])
-                identity["sha256"] = "0" * 64
-                self._write_profile(**{key: identity})
+        for command in (
+            "/usr/bin/go test -v ./pkg/parser",
+            shlex.join([str(self.go), "test", "-v", "./pkg/other"]),
+        ):
+            with self.subTest(unpinned_native=command):
                 out = pith_adapter.rewrite_hook_input(
-                    {"tool_name": "Bash", "tool_input": {"command": f"{self.go} test -v ./pkg/parser"}},
-                    str(self.profile_path), self.profile_sha256,
+                    {"tool_name": "Bash", "tool_input": {"command": command}}, self.pith_binary,
                 )
-                self.assertNotIn("updatedInput", out["hookSpecificOutput"])
-        self._write_profile()
+                self.assertIn("updatedInput", out["hookSpecificOutput"])
 
-        os.chmod(self.profile_path, 0o640)
-        out = pith_adapter.rewrite_hook_input(
-            {"tool_name": "Bash", "tool_input": {"command": f"{self.go} test -v ./pkg/parser"}},
-            str(self.profile_path), self.profile_sha256,
-        )
-        self.assertNotIn("updatedInput", out["hookSpecificOutput"])
-        self._write_profile()
 
-        self._write_profile(cwd=str(self.root / "different-cwd"), repoRoot=str(self.root / "different-cwd"))
-        class ExecCalled(Exception):
-            pass
-        with mock.patch.object(pith_adapter, "_exec_original", side_effect=ExecCalled):
-            with self.assertRaises(ExecCalled):
-                pith_adapter.run_native(
-                    [str(self.go), "test", "-v", "./pkg/parser"],
-                    str(self.profile_path), self.profile_sha256,
-                )
-        self.assertEqual(self._invocations(), 0)
+    def test_malformed_unsupported_oversized_and_deep_hooks_bypass(self):
+        deep = b'{"x":' + b'[' * 1500 + b'0' + b']' * 1500 + b'}'
+        for raw in (
+            b"not json",
+            json.dumps({"tool_name": "Other", "tool_input": {"command": "anything"}}).encode(),
+            deep,
+            b"x" * (pith_adapter.HOOK_INPUT_LIMIT + 1),
+        ):
+            with self.subTest(size=len(raw)):
+                status, text = self._call_hook(raw)
+                self.assertEqual(status, 0)
+                self.assertEqual(json.loads(text), pith_adapter._allow())
 
-    def test_source_head_or_dirty_tree_mismatch_execs_original(self):
-        self._write_profile(sourceHead="c" * 40)
-        class ExecCalled(Exception):
-            pass
-        env = self._env()
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(pith_adapter, "_exec_original", side_effect=ExecCalled):
-            with self.assertRaises(ExecCalled):
-                pith_adapter.run_native(
-                    [str(self.go), "test", "-v", "./pkg/parser"],
-                    str(self.profile_path), self.profile_sha256,
-                )
-        self.assertEqual(self._invocations(), 0)
+    def test_hook_response_encoder_recursion_falls_back_to_allow(self):
+        raw = json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": f"{self.go} test -v ./pkg/parser"},
+        }).encode()
+        real_dumps = json.dumps
+        calls = 0
 
-        self._write_profile()
-        env = self._env(FAKE_GIT_DIRTY=" M pkg/parser/example.go\n")
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(pith_adapter, "_exec_original", side_effect=ExecCalled):
-            with self.assertRaises(ExecCalled):
-                pith_adapter.run_native(
-                    [str(self.go), "test", "-v", "./pkg/parser"],
-                    str(self.profile_path), self.profile_sha256,
-                )
-        self.assertEqual(self._invocations(), 0)
+        def fail_first_dump(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RecursionError("fixture recursion")
+            return real_dumps(*args, **kwargs)
 
-        env = self._env(FAKE_GIT_DIRTY_BYTES=10_000_000)
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(pith_adapter, "_exec_original", side_effect=ExecCalled):
-            with self.assertRaises(ExecCalled):
-                pith_adapter.run_native(
-                    [str(self.go), "test", "-v", "./pkg/parser"],
-                    str(self.profile_path), self.profile_sha256,
-                )
-        self.assertEqual(self._invocations(), 0)
+        with mock.patch.object(pith_adapter.json, "dumps", side_effect=fail_first_dump):
+            status, text = self._call_hook(raw)
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(text), pith_adapter._allow())
+        self.assertEqual(calls, 2)
 
     def test_success_uses_transform_contract_once(self):
         status, output, _, warnings = self._run()
@@ -303,7 +257,7 @@ else:
         self.assertEqual(warnings, [])
         self.assertEqual(self._invocations(), 1)
         request = json.loads(self.pith_log.read_text(encoding="utf-8"))
-        self.assertEqual(request["command"], f"{self.go} test -v ./pkg/parser")
+        self.assertEqual(request["command"], shlex.join([str(self.go), "test", "-v", "./pkg/parser"]))
         self.assertEqual(request["exitCode"], 0)
         self.assertFalse(request["rawBypass"])
         self.assertFalse(request["telemetryEnabled"])
@@ -323,9 +277,6 @@ else:
             os.dup2(stderr_write, 2)
             os.close(stderr_write)
             os.chdir(self.root)
-            self.profile["cwd"] = str(self.root)
-            self.profile["repoRoot"] = str(self.root)
-            self._write_profile()
             env = self._env(FAKE_GO_MODE="context", FAKE_CONTEXT="kept", FAKE_GO_CONTEXT_FILE=self.context_file)
             with mock.patch.dict(os.environ, env, clear=True):
                 status, output, _, _ = self._run()
@@ -353,7 +304,7 @@ else:
                 with self.assertRaises(ExecCalled):
                     pith_adapter.run_native(
                         [str(self.go), "test", "-v", "./pkg/parser"],
-                        str(self.profile_path), self.profile_sha256,
+                        self.pith_binary,
                     )
         self.assertEqual(self._invocations(), 0)
 
@@ -403,7 +354,7 @@ else:
             with self.assertRaises(ExecCalled):
                 pith_adapter.run_native(
                     [str(self.go), "test", "-v", "./pkg/parser"],
-                    str(self.profile_path), self.profile_sha256,
+                    self.pith_binary,
                 )
         self.assertEqual(self._invocations(), 0)
 
@@ -434,8 +385,55 @@ else:
             status, output, _, warnings = self._run()
         self.assertEqual((status, output), (0, VALID))
         self.assertEqual(warnings, [])
+        self.assertFalse(fail_once)
         self.assertEqual(self._invocations(), 1)
         self.assertFalse(self.pith_log.exists())
+
+        real_poller = pith_adapter._new_pipe_poller
+        native_read_fds = set()
+
+        def remember_poller_for_persistent(*fds):
+            if len(fds) == 1:
+                native_read_fds.add(fds[0])
+            return real_poller(*fds)
+
+        persistent_errors = 3
+
+        def fail_persistent_reads(fd, size):
+            nonlocal persistent_errors
+            if fd in native_read_fds and persistent_errors:
+                persistent_errors -= 1
+                raise OSError(5, "persistent fixture read failure")
+            return real_read(fd, size)
+
+        env = self._env()
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(pith_adapter, "_new_pipe_poller", side_effect=remember_poller_for_persistent),
+            mock.patch.object(pith_adapter.os, "read", side_effect=fail_persistent_reads),
+        ):
+            status, output, _, warnings = self._run()
+        self.assertEqual((status, output), (0, b""))
+        self.assertEqual(persistent_errors, 0)
+        self.assertEqual(warnings, [("stdout capture read failed", 0)])
+        self.assertEqual(self._invocations(), 2)
+        self.assertFalse(self.pith_log.exists())
+
+    def test_preparation_failure_after_latched_cancel_never_execs_native(self):
+        def cancel_then_fail(_fd):
+            os.kill(os.getpid(), signal.SIGINT)
+            raise OSError("fixture selector preparation failure")
+
+        with (
+            mock.patch.object(pith_adapter, "_new_pipe_poller", side_effect=cancel_then_fail),
+            mock.patch.object(pith_adapter, "_reraise") as reraise,
+            mock.patch.object(pith_adapter, "_exec_original", side_effect=AssertionError("native fallback after cancel")),
+        ):
+            status, output, _, _ = self._run()
+        reraise.assert_called_once_with(signal.SIGINT)
+        self.assertEqual(status, 128 + signal.SIGINT)
+        self.assertEqual(output, b"")
+        self.assertEqual(self._invocations(), 0)
 
     def test_capture_limit_boundary_overflow_and_prefix_relay_once(self):
         status, output, writes, _ = self._run(capture_limit=len(VALID))
@@ -474,17 +472,91 @@ else:
         self.assertEqual(self._invocations(), 2)
 
         env = self._env(FAKE_PITH_MODE="sleep")
+        self.pith_started.unlink(missing_ok=True)
         start = time.monotonic()
         with mock.patch.dict(os.environ, env, clear=True):
-            status, output, _, _ = self._run(buffer_seconds=0.08)
+            status, output, _, _ = self._run(buffer_seconds=0.5)
         elapsed = time.monotonic() - start
         self.assertEqual((status, output), (0, VALID))
-        self.assertLess(elapsed, 0.5)
+        self.assertLess(elapsed, 0.5 + 0.05 + 0.25)
+        self.assertEqual(self.pith_started.read_text(encoding="ascii"), "started")
         self.assertEqual(self._invocations(), 3)
+
+    def test_deadline_after_transform_preparation_publishes_raw_without_pith(self):
+        real_poller = pith_adapter._new_pipe_poller
+        transform_prep_started = []
+
+        def delay_transform_preparation(*fds):
+            if len(fds) == 2:
+                transform_prep_started.append(time.monotonic())
+                time.sleep(0.6)
+            return real_poller(*fds)
+
+        self.pith_started.unlink(missing_ok=True)
+        env = self._env()
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(pith_adapter, "_new_pipe_poller", side_effect=delay_transform_preparation),
+        ):
+            run_started = time.monotonic()
+            status, output, _, _ = self._run(buffer_seconds=0.5)
+        self.assertEqual((status, output), (0, VALID))
+        self.assertTrue(transform_prep_started)
+        self.assertLess(transform_prep_started[0] - run_started, 0.5)
+        self.assertFalse(self.pith_started.exists())
+        self.assertFalse(self.pith_log.exists())
+        self.assertEqual(self._invocations(), 1)
+
+    def test_deadline_is_rechecked_at_gate_after_helper_spawn(self):
+        real_popen = subprocess.Popen
+        deadline = time.monotonic() + 0.5
+
+        def start_helper_then_cross_deadline(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            self.assertLess(time.monotonic(), deadline, "helper must start before the deadline")
+            time.sleep(0.55)
+            return proc
+
+        self.pith_started.unlink(missing_ok=True)
+        env = self._env()
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(pith_adapter.subprocess, "Popen", side_effect=start_helper_then_cross_deadline),
+        ):
+            result = pith_adapter._run_transform(
+                self.pith_binary, shlex.join([str(self.go), "test", "-v", "./pkg/parser"]),
+                VALID, deadline,
+            )
+        self.assertIsNone(result)
+        self.assertFalse(self.pith_started.exists())
+        self.assertFalse(self.pith_log.exists())
+
+    def test_unresolved_transform_reap_is_not_reported_as_settled(self):
+        real_stop_reap = pith_adapter._stop_reap
+
+        def reap_but_report_unknown(proc, *, grace_seconds=0.05):
+            real_stop_reap(proc, grace_seconds=grace_seconds)
+            return False
+
+        self.pith_started.unlink(missing_ok=True)
+        env = self._env(FAKE_PITH_MODE="sleep")
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(pith_adapter, "_stop_reap", side_effect=reap_but_report_unknown),
+        ):
+            status, output, _, warnings = self._run(buffer_seconds=0.5)
+        self.assertEqual((status, output), (0, VALID))
+        self.assertEqual(self.pith_started.read_text(encoding="ascii"), "started")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("reap unsettled", warnings[0][0])
+        self.assertEqual(warnings[0][1], 0)
 
     def test_transform_malformed_fidelity_invalid_utf8_and_surrogate_fallback(self):
         expected_invocations = 0
-        for mode in ("malformed", "huge_output", "wrong_parser", "diagnostic", "same", "signal"):
+        for mode in (
+            "malformed", "huge_output", "deep_response", "wrong_parser", "diagnostic", "same", "signal",
+            "status_failure",
+        ):
             self.pith_log.unlink(missing_ok=True)
             env = self._env(FAKE_PITH_MODE=mode)
             with mock.patch.dict(os.environ, env, clear=True):
@@ -511,7 +583,12 @@ else:
         self.assertFalse(self.pith_log.exists())
 
         response = json.dumps({"output": "\ud800", "parser": "tests", "passthrough": False}).encode()
-        self.assertIsNone(pith_adapter._selected_output(VALID, response))
+        with mock.patch.object(
+            pith_adapter, "_encode_selected_utf8", wraps=pith_adapter._encode_selected_utf8,
+        ) as encode_selected:
+            self.assertIsNone(pith_adapter._selected_output(VALID, response))
+        encode_selected.assert_called_once_with("\ud800")
+        self.assertIsNone(pith_adapter._encode_selected_utf8("\ud800"))
 
     def test_failed_publication_warns_truthfully_without_retry_or_status_change(self):
         status, output, writes, warnings = self._run(writer_result=False)
@@ -543,6 +620,12 @@ else:
         self.assertNotIn("start_new_session", source)
         self.assertNotIn("os.setsid", source)
         self.assertNotIn("os.killpg", source)
+        self.assertNotIn("_source_matches", source)
+        self.assertNotIn("_git_status_clean", source)
+        self.assertNotIn("_identity_matches", source)
+        self.assertNotIn("sourceHead", source)
+        self.assertNotIn("sourceTree", source)
+        self.assertNotIn("sha256", source)
 
 
 if __name__ == "__main__":
