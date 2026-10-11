@@ -24,6 +24,9 @@ jobs:
       - run: go mod download
       - run: go test -v ./...
       - run: go vet ./...
+      - name: Test explicit Codex caller contract
+        working-directory: integrations/codex
+        run: python3 -B -m unittest -v test_capture_command.py
       - name: Test release publication safeguards
         run: python3 -m unittest discover -s .github/tests -v
 
