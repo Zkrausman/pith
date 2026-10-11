@@ -136,7 +136,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
     def _invocations(self):
         return len(self.go_counter.read_text(encoding="ascii").splitlines()) if self.go_counter.exists() else 0
 
-    def _run(self, *, writer_result=True, record_outcome=None, **kwargs):
+    def _run(self, *, writer_result=True, record_outcome=None, record_observation=None, **kwargs):
         packets = bytearray()
         writes = []
         warnings = []
@@ -155,6 +155,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
                 stdout_fd=123, writer=writer,
                 warning_writer=lambda message, native: warnings.append((message, native)),
                 record_outcome=record_outcome or (lambda *_args: None),
+                record_observation=record_observation or (lambda *_args: None),
                 **kwargs,
             )
         return status, bytes(packets), writes, warnings
@@ -233,6 +234,107 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
                 status, text = self._call_hook(raw)
                 self.assertEqual(status, 0)
                 self.assertEqual(json.loads(text), pith_adapter._allow())
+
+    def test_proposal_families_are_fixed_and_eligible_go_test_is_not_double_counted(self):
+        cases = {
+            "/private/sentinel/bin/git status --token=secret-sentinel": "git status",
+            "go test -run TestX ./pkg/parser": "go test",
+            "npm run build": "npm run",
+            "python3 -m pytest -q": "pytest",
+            "node app.js": "node",
+            "git obscure-subcommand": pith_adapter._FAMILY_OTHER,
+            "custom-tool --password=sentinel": pith_adapter._FAMILY_OTHER,
+            "git status && cat /private/sentinel/file": pith_adapter._FAMILY_OTHER,
+            "unterminated ' quote": pith_adapter._FAMILY_OTHER,
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                actual = pith_adapter._proposal_family(command)
+                self.assertEqual(actual, expected)
+                self.assertNotIn("sentinel", actual)
+
+        eligible_command = shlex.join([str(self.go), "test", "-v", "./pkg/parser"])
+        payload = {"tool_name": "Bash", "tool_input": {"command": eligible_command}}
+        proposals = []
+        wrapped = pith_adapter.rewrite_hook_input(
+            payload, self.pith_binary, record_proposal=lambda binary, family: proposals.append((binary, family)),
+        )
+        self.assertIn("updatedInput", wrapped["hookSpecificOutput"])
+        self.assertEqual(proposals, [], "eligible wrapped Go tests must not add a proposal row")
+
+        unsupported = {"tool_name": "Bash", "tool_input": {"command": "git status --short"}}
+        allowed = pith_adapter.rewrite_hook_input(
+            unsupported, self.pith_binary, record_proposal=lambda binary, family: proposals.append((binary, family)),
+        )
+        self.assertEqual(allowed, pith_adapter._allow())
+        self.assertEqual(proposals, [(self.pith_binary, "git status")])
+
+    def test_private_observation_requests_contain_only_allowlisted_labels_and_nullable_counts(self):
+        submitted = []
+        with mock.patch.object(pith_adapter, "_record_private_observation", side_effect=lambda binary, request, **_kwargs: submitted.append((binary, request))):
+            pith_adapter._record_codex_proposal(self.pith_binary, "git status")
+            pith_adapter._record_codex_proposal(self.pith_binary, "/private/sentinel/command --token=secret")
+            pith_adapter._record_capture_observation(
+                self.pith_binary, "complete_within_window", 0, "raw", 0, 0,
+            )
+            pith_adapter._record_capture_observation(
+                self.pith_binary, "incomplete", None, "unknown", None, None,
+            )
+        self.assertEqual(len(submitted), 3)
+        self.assertEqual(submitted[0][1], {"kind": "proposal", "family": "git status"})
+        self.assertEqual(submitted[1][1], {
+            "kind": "capture", "captureOutcome": "complete_within_window", "elapsedMs": 0,
+            "selection": "raw", "originalBytes": 0, "deliveredBytes": 0,
+        })
+        self.assertEqual(submitted[2][1], {
+            "kind": "capture", "captureOutcome": "incomplete", "elapsedMs": None,
+            "selection": "unknown", "originalBytes": None, "deliveredBytes": None,
+        })
+        serialized = json.dumps(submitted)
+        for sentinel in ("/private/sentinel", "secret", "command", "session", "model", "price", "output"):
+            self.assertNotIn(sentinel, serialized)
+
+    def test_private_observation_recorder_has_bounded_payload_and_best_effort_failure(self):
+        process = mock.Mock()
+        process.communicate.return_value = b""
+        request = {"kind": "proposal", "family": "other/compound"}
+        with mock.patch.object(pith_adapter.subprocess, "Popen", return_value=process) as popen:
+            pith_adapter._record_private_observation(self.pith_binary, request, timeout=0.02)
+        popen.assert_called_once()
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], [self.pith_binary, "_record-codex-wrapper"])
+        self.assertEqual(json.loads(process.communicate.call_args.args[0]), request)
+        self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+        process.kill.assert_not_called()
+
+        with mock.patch.object(pith_adapter.subprocess, "Popen", side_effect=OSError("fixture recorder failure")):
+            pith_adapter._record_private_observation(self.pith_binary, request)
+
+    def test_pretool_entry_records_family_only_for_unsupported_proposals(self):
+        submitted = []
+        def call(command):
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}).encode()
+            output = io.StringIO()
+            fake_stdin = mock.Mock(buffer=io.BytesIO(payload))
+            with (
+                mock.patch.object(sys, "stdin", fake_stdin),
+                mock.patch.object(sys, "stdout", output),
+                mock.patch.object(pith_adapter, "_record_private_observation", side_effect=lambda binary, request, **_kwargs: submitted.append(request)),
+            ):
+                status = pith_adapter.main(["--pith-binary", self.pith_binary])
+            return status, json.loads(output.getvalue())
+
+        status, allowed = call("/private/sentinel/git status --token=secret-sentinel")
+        self.assertEqual(status, 0)
+        self.assertEqual(allowed, pith_adapter._allow())
+        self.assertEqual(submitted, [{"kind": "proposal", "family": "git status"}])
+        eligible_command = shlex.join([str(self.go), "test", "-v", "./pkg/parser"])
+        status, rewritten = call(eligible_command)
+        self.assertEqual(status, 0)
+        self.assertIn("updatedInput", rewritten["hookSpecificOutput"])
+        self.assertEqual(len(submitted), 1, "eligible Go test should not create a proposal observation")
+        self.assertNotIn("sentinel", json.dumps(submitted))
 
     def test_hook_response_encoder_recursion_falls_back_to_allow(self):
         raw = json.dumps({
@@ -336,13 +438,19 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
 
     def test_silent_deadline_and_eof_before_exit_switch_to_raw(self):
         expected_invocations = 0
+        records = []
         for mode in ("silent", "eof_before_exit"):
             self.pith_log.unlink(missing_ok=True)
             env = self._env(FAKE_GO_MODE=mode, FAKE_GO_SLEEP="0.12")
             with mock.patch.dict(os.environ, env, clear=True):
-                status, output, _, _ = self._run(capture_seconds=0.03)
+                status, output, _, _ = self._run(
+                    capture_seconds=0.03,
+                    record_observation=lambda *args: records.append(args),
+                )
             self.assertEqual((status, output), (0, VALID), mode)
             self.assertFalse(self.pith_log.exists())
+            self.assertEqual(records[-1][1], "deadline_stream")
+            self.assertEqual(records[-1][3:], ("raw", len(VALID), len(VALID)))
             expected_invocations += 1
             self.assertEqual(self._invocations(), expected_invocations)
 
@@ -391,7 +499,8 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
             status = pith_adapter.run_native(
                 [str(self.go), "test", "-v", "./pkg/parser"], self.pith_binary,
                 capture_seconds=0.03, transform_seconds=0.5,
-                stdout_fd=123, writer=writer,
+                stdout_fd=123, writer=writer, record_outcome=lambda *_args: None,
+                record_observation=lambda *_args: None,
             )
 
         self.assertEqual(status, 0)
@@ -473,15 +582,18 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         def spawn_silent_native(argv, *, stdin, stdout, stderr, launch_deadline=None):
             return process, True, False, False
 
+        records = []
         with (
             mock.patch.object(pith_adapter, "_new_pipe_poller", side_effect=remember_poller_for_persistent),
             mock.patch.object(pith_adapter.os, "read", side_effect=fail_persistent_reads),
             mock.patch.object(pith_adapter, "_spawn_gated", side_effect=spawn_silent_native),
         ):
-            status, output, _, warnings = self._run()
+            status, output, _, warnings = self._run(record_observation=lambda *args: records.append(args))
         self.assertEqual((status, output), (0, b""))
         self.assertEqual(persistent_errors, 0)
         self.assertEqual(warnings, [("stdout capture read failed", 0)])
+        self.assertEqual(records[0][1], "incomplete")
+        self.assertEqual(records[0][3:], ("unknown", None, None))
         self.assertEqual(self._invocations(), 1)
         self.assertFalse(self.pith_log.exists())
 
@@ -508,10 +620,15 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
 
         self.pith_log.unlink(missing_ok=True)
         env = self._env(FAKE_GO_MODE="prefix_overflow", FAKE_GO_BYTES=100)
+        records = []
         with mock.patch.dict(os.environ, env, clear=True):
-            status, output, writes, _ = self._run(capture_limit=6)
+            status, output, writes, _ = self._run(
+                capture_limit=6, record_observation=lambda *args: records.append(args),
+            )
         self.assertEqual((status, output), (0, b"prefix" + b"x" * 100))
         self.assertEqual(b"".join(writes), output)
+        self.assertEqual(records[0][1], "cap_stream")
+        self.assertEqual(records[0][3:], ("raw", len(output), len(output)))
         self.assertFalse(self.pith_log.exists())
         self.assertEqual(self._invocations(), 2)
 
@@ -595,6 +712,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
                 [str(self.go), "test", "-v", "./pkg/parser"], self.pith_binary,
                 capture_seconds=30.0, transform_seconds=0.5,
                 stdout_fd=123, writer=writer, record_outcome=lambda *_args: None,
+                record_observation=lambda *_args: None,
             )
 
         self.assertEqual((status, bytes(packets)), (0, SELECTED))
@@ -709,46 +827,61 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         self.assertIsNone(pith_adapter._encode_selected_utf8("\ud800"))
 
     def test_failed_publication_warns_truthfully_without_retry_or_status_change(self):
-        status, output, writes, warnings = self._run(writer_result=False)
+        records = []
+        status, output, writes, warnings = self._run(
+            writer_result=False, record_observation=lambda *args: records.append(args),
+        )
         self.assertEqual(status, 0)
         self.assertEqual(output, b"")
         self.assertEqual(len(writes), 1)
         self.assertEqual(warnings, [("stdout publication incomplete", 0)])
+        self.assertEqual(records[0][1], "incomplete")
+        self.assertEqual(records[0][3:], ("unknown", None, None))
         self.assertEqual(self._invocations(), 1)
 
-    def test_wrapper_telemetry_submits_once_after_transform_or_complete_raw_fallback(self):
+    def test_capture_observation_keeps_existing_gain_telemetry(self):
         records = []
-        status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+        legacy_records = []
+        status, output, _, _ = self._run(
+            record_outcome=lambda *args: legacy_records.append(args),
+            record_observation=lambda *args: records.append(args),
+        )
         self.assertEqual((status, output), (0, SELECTED))
         self.assertEqual(len(records), 1)
-        binary, original, delivered, duration_ms, outcome = records[0]
+        self.assertEqual(len(legacy_records), 1, "existing gain telemetry must remain intact")
+        self.assertEqual(legacy_records[0][1:3], (VALID, SELECTED))
+        self.assertEqual(legacy_records[0][-1], "transformed")
+        binary, outcome, duration_ms, selection, original_bytes, delivered_bytes = records[0]
         self.assertEqual(binary, self.pith_binary)
-        self.assertEqual((original, delivered, outcome), (VALID, SELECTED, "transformed"))
+        self.assertEqual((outcome, selection), ("complete_within_window", "reduced"))
+        self.assertEqual((original_bytes, delivered_bytes), (len(VALID), len(SELECTED)))
         self.assertGreaterEqual(duration_ms, 0)
 
         records.clear()
         env = self._env(FAKE_PITH_MODE="wrong_parser")
         with mock.patch.dict(os.environ, env, clear=True):
-            status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+            status, output, _, _ = self._run(record_observation=lambda *args: records.append(args))
         self.assertEqual((status, output), (0, VALID))
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0][1:3], (VALID, VALID))
-        self.assertEqual(records[0][-1], "raw_fallback")
+        self.assertEqual(records[0][1], "complete_within_window")
+        self.assertEqual(records[0][3], "raw")
+        self.assertEqual(records[0][4:], (len(VALID), len(VALID)))
 
         records.clear()
         env = self._env(FAKE_GO_STATUS="7")
         with mock.patch.dict(os.environ, env, clear=True):
-            status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+            status, output, _, _ = self._run(record_observation=lambda *args: records.append(args))
         self.assertEqual((status, output), (7, VALID))
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0][1:3], (VALID, VALID))
-        self.assertEqual(records[0][-1], "raw_fallback")
+        self.assertEqual(records[0][1], "complete_within_window")
+        self.assertEqual(records[0][3], "raw")
+        self.assertEqual(records[0][4:], (len(VALID), len(VALID)))
 
     def test_recorder_failure_does_not_change_published_native_result(self):
         def fail_recorder(*_args):
             raise OSError("fixture telemetry failure")
 
-        status, output, _, _ = self._run(record_outcome=fail_recorder)
+        status, output, _, _ = self._run(record_observation=fail_recorder)
         self.assertEqual((status, output), (0, SELECTED))
 
     def test_signal_arriving_during_recorder_is_reraised_after_publication(self):
@@ -756,7 +889,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
             os.kill(os.getpid(), signal.SIGTERM)
 
         with mock.patch.object(pith_adapter, "_reraise") as reraise:
-            status, output, writes, _ = self._run(record_outcome=signal_recorder)
+            status, output, writes, _ = self._run(record_observation=signal_recorder)
         self.assertEqual((status, output), (0, SELECTED))
         self.assertEqual(writes, [SELECTED])
         reraise.assert_called_once_with(signal.SIGTERM)
@@ -764,26 +897,29 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         with mock.patch.dict(os.environ, {"FAKE_GO_STATUS": "7"}), mock.patch.object(
             pith_adapter, "_reraise",
         ) as reraise:
-            status, output, writes, _ = self._run(record_outcome=signal_recorder)
+            status, output, writes, _ = self._run(record_observation=signal_recorder)
         self.assertEqual((status, output), (7, VALID))
         self.assertEqual(writes, [VALID])
         reraise.assert_called_once_with(signal.SIGTERM)
 
-    def test_incomplete_or_unknown_stdout_is_omitted_from_wrapper_telemetry(self):
+    def test_complete_invalid_utf8_and_deadline_stream_still_have_bounded_observations(self):
         records = []
         env = self._env(FAKE_GO_MODE="invalid_utf8")
         with mock.patch.dict(os.environ, env, clear=True):
-            status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+            status, output, _, _ = self._run(record_observation=lambda *args: records.append(args))
         self.assertEqual((status, output), (0, b"\xff"))
-        self.assertEqual(records, [])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][1], "complete_within_window")
+        self.assertEqual(records[0][3:], ("raw", 1, 1))
 
         env = self._env(FAKE_GO_MODE="silent")
         with mock.patch.dict(os.environ, env, clear=True):
             status, output, _, _ = self._run(
-                capture_seconds=0.03, record_outcome=lambda *args: records.append(args),
+                capture_seconds=0.03, record_observation=lambda *args: records.append(args),
             )
         self.assertEqual((status, output), (0, VALID))
-        self.assertEqual(records, [])
+        self.assertEqual(records[-1][1], "deadline_stream")
+        self.assertEqual(records[-1][3:], ("raw", len(VALID), len(VALID)))
 
     def test_record_helper_bounds_payload_and_reaps_timed_out_attempt_once(self):
         process = mock.Mock()

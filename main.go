@@ -23,6 +23,7 @@ import (
 	"pith/pkg/selfupdate"
 	"pith/pkg/telemetry"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -47,7 +48,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.3.2"
+const version = "v3.4.0"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
@@ -56,6 +57,13 @@ const (
 )
 
 type codexWrapperRecordRequest struct {
+	Kind           string `json:"kind"`
+	Family         string `json:"family"`
+	CaptureOutcome string `json:"captureOutcome"`
+	ElapsedMs      *int64 `json:"elapsedMs"`
+	Selection      string `json:"selection"`
+	OriginalBytes  *int64 `json:"originalBytes"`
+	DeliveredBytes *int64 `json:"deliveredBytes"`
 	OriginalRunes  *int   `json:"originalRunes"`
 	DeliveredRunes *int   `json:"deliveredRunes"`
 	DurationMs     *int64 `json:"durationMs"`
@@ -379,35 +387,63 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return fmt.Errorf("wrapper telemetry request has trailing data")
 	}
-	if request.OriginalRunes == nil || request.DeliveredRunes == nil || request.DurationMs == nil {
-		return fmt.Errorf("wrapper telemetry counts are required")
-	}
-	originalRunes := *request.OriginalRunes
-	deliveredRunes := *request.DeliveredRunes
-	durationMs := *request.DurationMs
-	if originalRunes < 0 || originalRunes > codexWrapperRecordMaxRunes ||
-		deliveredRunes < 0 || deliveredRunes > codexWrapperRecordMaxRunes ||
-		durationMs < 0 || durationMs > codexWrapperRecordMaxDuration {
-		return fmt.Errorf("wrapper telemetry counts are out of range")
-	}
-	decision := telemetry.DecisionUnknown
-	passthrough := false
-	parserName := "tests"
-	switch request.Outcome {
-	case "transformed":
-		if deliveredRunes > originalRunes {
-			return fmt.Errorf("transformed wrapper output exceeds original")
+	var capture *telemetry.CodexCaptureObservation
+	var proposalFamily string
+	var legacy *codexWrapperRecordRequest
+	switch request.Kind {
+	case "proposal":
+		if request.Family == "" || request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
+			request.OriginalBytes != nil || request.DeliveredBytes != nil || request.OriginalRunes != nil ||
+			request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
+			return fmt.Errorf("wrapper proposal request is invalid")
 		}
-		decision = telemetry.DecisionTransformed
-	case "raw_fallback":
-		if deliveredRunes != originalRunes {
-			return fmt.Errorf("raw fallback counts must match")
+		if !telemetry.IsCodexObservationFamilyAllowed(request.Family) {
+			return fmt.Errorf("wrapper proposal family is invalid")
 		}
-		decision = telemetry.DecisionProtectedPassthrough
-		passthrough = true
-		parserName = ""
+		proposalFamily = request.Family
+	case "capture":
+		if request.Family != "" || request.OriginalRunes != nil || request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
+			return fmt.Errorf("wrapper capture request is invalid")
+		}
+		capture = &telemetry.CodexCaptureObservation{
+			Outcome: request.CaptureOutcome, ElapsedMs: request.ElapsedMs, Selection: request.Selection,
+			OriginalBytes: request.OriginalBytes, DeliveredBytes: request.DeliveredBytes,
+		}
+		if err := telemetry.ValidateCodexCaptureObservation(*capture); err != nil {
+			return fmt.Errorf("wrapper capture request is invalid")
+		}
+	case "":
+		// Continue to accept requests from an already installed v3.3.x adapter.
+		if request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
+			request.OriginalBytes != nil || request.DeliveredBytes != nil || request.Family != "" {
+			return fmt.Errorf("wrapper telemetry request is invalid")
+		}
+		if request.OriginalRunes == nil || request.DeliveredRunes == nil || request.DurationMs == nil {
+			return fmt.Errorf("wrapper telemetry counts are required")
+		}
+		originalRunes := *request.OriginalRunes
+		deliveredRunes := *request.DeliveredRunes
+		durationMs := *request.DurationMs
+		if originalRunes < 0 || originalRunes > codexWrapperRecordMaxRunes ||
+			deliveredRunes < 0 || deliveredRunes > codexWrapperRecordMaxRunes ||
+			durationMs < 0 || durationMs > codexWrapperRecordMaxDuration {
+			return fmt.Errorf("wrapper telemetry counts are out of range")
+		}
+		switch request.Outcome {
+		case "transformed":
+			if deliveredRunes > originalRunes {
+				return fmt.Errorf("transformed wrapper output exceeds original")
+			}
+		case "raw_fallback":
+			if deliveredRunes != originalRunes {
+				return fmt.Errorf("raw fallback counts must match")
+			}
+		default:
+			return fmt.Errorf("wrapper telemetry outcome is invalid")
+		}
+		legacy = &request
 	default:
-		return fmt.Errorf("wrapper telemetry outcome is invalid")
+		return fmt.Errorf("wrapper telemetry request kind is invalid")
 	}
 
 	// Validate configuration before opening or creating telemetry storage. The
@@ -421,6 +457,23 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer tel.Close()
+	if proposalFamily != "" {
+		return tel.RecordCodexProposedFamily(proposalFamily)
+	}
+	if capture != nil {
+		return tel.RecordCodexCapture(*capture)
+	}
+	originalRunes := *legacy.OriginalRunes
+	deliveredRunes := *legacy.DeliveredRunes
+	durationMs := *legacy.DurationMs
+	decision := telemetry.DecisionTransformed
+	passthrough := false
+	parserName := "tests"
+	if legacy.Outcome == "raw_fallback" {
+		decision = telemetry.DecisionProtectedPassthrough
+		passthrough = true
+		parserName = ""
+	}
 	return tel.Record(telemetry.ExecutionRecord{
 		Timestamp:        time.Now().UTC(),
 		Command:          "go test",
@@ -599,21 +652,63 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(families) == 0 {
+	observations, err := tel.GetCodexObservationSummary()
+	if err != nil {
+		return err
+	}
+	if len(families) == 0 && observations.CaptureRecords == 0 && len(observations.ProposalCounts) == 0 {
 		cmd.Println("No unparsed command families discovered yet. Run some commands through Pith to gather data!")
 		return nil
 	}
 
-	cmd.Println("--- Opportunity Discovery (Unparsed Command Families) ---")
-	cmd.Printf("%-24s | %-12s | %-8s | %-15s | %-15s\n", "Command Family", "Harness", "Count", "Total Tokens", "Est. USD Saved")
-	cmd.Println(strings.Repeat("-", 86))
-	for _, family := range families {
-		estSavedTokens := float64(family.TotalRawTokens) * 0.7
-		estSavingsUSD := (estSavedTokens / 1000000.0) * cfg.USDPerMillionTokens
-		cmd.Printf("%-24s | %-12s | %-8d | %-15d | $%-15.3f\n", family.Family, family.Harness, family.InvocationCount, family.TotalRawTokens, estSavingsUSD)
+	if len(families) > 0 {
+		cmd.Println("--- Opportunity Discovery (Unparsed Command Families) ---")
+		cmd.Printf("%-24s | %-12s | %-8s | %-15s | %-15s\n", "Command Family", "Harness", "Count", "Total Tokens", "Est. USD Saved")
+		cmd.Println(strings.Repeat("-", 86))
+		for _, family := range families {
+			estSavedTokens := float64(family.TotalRawTokens) * 0.7
+			estSavingsUSD := (estSavedTokens / 1000000.0) * cfg.USDPerMillionTokens
+			cmd.Printf("%-24s | %-12s | %-8d | %-15d | $%-15.3f\n", family.Family, family.Harness, family.InvocationCount, family.TotalRawTokens, estSavingsUSD)
+		}
+		cmd.Println("\nUse 'pith discover --details <family>' for bounded redacted samples.")
 	}
-	cmd.Println("\nUse 'pith discover --details <family>' for bounded redacted samples.")
+	if len(observations.ProposalCounts) > 0 || observations.CaptureRecords > 0 {
+		printCodexObservationSummary(cmd, observations)
+	}
 	return nil
+}
+
+func printCodexObservationSummary(cmd *cobra.Command, summary telemetry.CodexObservationSummary) {
+	cmd.Printf("\n--- Private Codex Observations (local; %d-day retention, %d-row limit) ---\n",
+		telemetry.CodexObservationRetentionDays, telemetry.CodexObservationMaxRows)
+	if len(summary.ProposalCounts) > 0 {
+		families := make([]string, 0, len(summary.ProposalCounts))
+		for family := range summary.ProposalCounts {
+			families = append(families, family)
+		}
+		sort.Strings(families)
+		cmd.Println("Unsupported proposed families:")
+		for _, family := range families {
+			cmd.Printf("  %-20s %d\n", family, summary.ProposalCounts[family])
+		}
+	}
+	if summary.CaptureRecords > 0 {
+		cmd.Println("Go test capture outcomes:")
+		for _, outcome := range []string{
+			telemetry.CodexCaptureComplete, telemetry.CodexCaptureDeadline,
+			telemetry.CodexCaptureCap, telemetry.CodexCaptureIncomplete,
+		} {
+			cmd.Printf("  %-24s %d\n", outcome, summary.CaptureOutcomes[outcome])
+		}
+		cmd.Printf("Measurements: captures %d; native elapsed ms known/unknown %d/%d; byte counts known/unknown %d/%d; selection reduced/raw/unknown %d/%d/%d.\n",
+			summary.CaptureRecords, summary.ElapsedKnown, summary.ElapsedUnknown,
+			summary.ByteCountsKnown, summary.ByteCountsUnknown,
+			summary.SelectionCounts[telemetry.CodexSelectionReduced],
+			summary.SelectionCounts[telemetry.CodexSelectionRaw],
+			summary.SelectionCounts[telemetry.CodexSelectionUnknown])
+		cmd.Printf("Recorded reductions after captures longer than 2 seconds: %d captures, %d bytes.\n",
+			summary.SlowReductionCount, summary.SlowReductionBytes)
+	}
 }
 
 func runHook(cmd *cobra.Command, args []string) error {

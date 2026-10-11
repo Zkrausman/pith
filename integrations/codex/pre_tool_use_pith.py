@@ -26,6 +26,7 @@ HOOK_INPUT_LIMIT = 64 << 10
 RECORD_TIMEOUT_SECONDS = 0.15
 RECORD_MAX_RUNES = 1 << 20
 RECORD_MAX_DURATION_MS = 24 * 60 * 60 * 1000
+RECORD_MAX_BYTES = 1 << 40
 RECORD_MAX_REQUEST = 2048
 _CANCEL_SIGNALS = {signal.SIGINT, signal.SIGTERM}
 _CANCEL_SIGNAL: int | None = None
@@ -35,6 +36,32 @@ _RUN = re.compile(r"=== RUN\s+(\S+)\Z")
 _PAUSE = re.compile(r"=== PAUSE\s+\S+\Z")
 _CONT = re.compile(r"=== CONT\s+\S+\Z")
 _PASS = re.compile(r"--- PASS:\s+(\S+)\s+\(\d+(?:\.\d+)?s\)\Z")
+
+_FAMILY_OTHER = "other/compound"
+_COMMAND_SUBCOMMANDS = {
+    "git": {"status", "diff", "log", "show", "branch"},
+    "go": {"test", "build", "run", "vet"},
+    "npm": {"test", "run", "install", "ci"},
+    "pnpm": {"test", "run", "install"},
+    "yarn": {"test", "run", "install"},
+    "bun": {"test", "run", "install"},
+}
+_SIMPLE_FAMILIES = {
+    "pytest": "pytest", "pytest-3": "pytest", "node": "node", "npx": "npx",
+    "cargo": "cargo", "rustc": "rustc", "make": "make", "cmake": "cmake",
+    "docker": "docker", "kubectl": "kubectl", "terraform": "terraform",
+    "rg": "rg", "grep": "grep", "find": "find", "ls": "ls", "cat": "cat",
+}
+_CODEX_PROPOSAL_FAMILIES = {
+    "git status", "git diff", "git log", "git show", "git branch",
+    "go test", "go build", "go run", "go vet",
+    "npm test", "npm run", "npm install", "npm ci",
+    "pnpm test", "pnpm run", "pnpm install",
+    "yarn test", "yarn run", "yarn install",
+    "bun test", "bun run", "bun install",
+    "python", "pytest", "node", "npx", "cargo", "rustc", "make", "cmake",
+    "docker", "kubectl", "terraform", "rg", "grep", "find", "ls", "cat", _FAMILY_OTHER,
+}
 
 
 def _absolute_go_test(command: str) -> list[str] | None:
@@ -73,7 +100,33 @@ def _allow(with_update: dict[str, object] | None = None) -> dict[str, object]:
     return {"hookSpecificOutput": specific}
 
 
-def rewrite_hook_input(payload: object, pith_binary: str) -> dict[str, object]:
+def _proposal_family(command: str) -> str:
+    """Map a proposed Bash command to a fixed label without retaining its text."""
+    if not command or any(ch in command for ch in "\x00\r\n;&|()<>`$*?[]{}~"):
+        return _FAMILY_OTHER
+    try:
+        argv = shlex.split(command, posix=True)
+        if not argv:
+            return _FAMILY_OTHER
+        for value in argv:
+            value.encode("utf-8", errors="strict")
+    except (ValueError, UnicodeError):
+        return _FAMILY_OTHER
+    executable = os.path.basename(argv[0]).lower()
+    if executable in _COMMAND_SUBCOMMANDS:
+        subcommand = argv[1].lower() if len(argv) > 1 else ""
+        return f"{executable} {subcommand}" if subcommand in _COMMAND_SUBCOMMANDS[executable] else _FAMILY_OTHER
+    if executable in {"python", "python3", "python3.12"}:
+        if len(argv) >= 3 and argv[1:3] == ["-m", "pytest"]:
+            return "pytest"
+        return "python"
+    return _SIMPLE_FAMILIES.get(executable, _FAMILY_OTHER)
+
+
+def rewrite_hook_input(
+    payload: object, pith_binary: str,
+    record_proposal: Callable[[str, str], None] | None = None,
+) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
         return _allow()
     tool_input = payload.get("tool_input")
@@ -87,8 +140,11 @@ def rewrite_hook_input(payload: object, pith_binary: str) -> dict[str, object]:
         pith_available = False
     if not pith_available:
         return _allow()
-    native = _absolute_go_test(tool_input["command"])
+    command = tool_input["command"]
+    native = _absolute_go_test(command)
     if native is None:
+        if record_proposal is not None:
+            record_proposal(pith_binary, _proposal_family(command))
         return _allow()
     wrapper = [
         os.path.realpath(sys.executable), "-I", "-S", os.path.realpath(__file__),
@@ -98,6 +154,8 @@ def rewrite_hook_input(payload: object, pith_binary: str) -> dict[str, object]:
         updated = shlex.join(wrapper)
         updated.encode("utf-8", errors="strict")
     except UnicodeError:
+        if record_proposal is not None:
+            record_proposal(pith_binary, _proposal_family(command))
         return _allow()
     # Preserve every caller-supplied option and change only the command.
     updated_input = dict(tool_input)
@@ -259,6 +317,87 @@ def _record_wrapper_outcome(
         subprocess.SubprocessError, RecursionError,
     ):
         return
+
+
+def _record_private_observation(
+    pith_binary: str, request: dict[str, object], *, timeout: float = RECORD_TIMEOUT_SECONDS,
+) -> None:
+    """Submit a tiny aggregate-only request with the existing bounded reaper."""
+    try:
+        encoded = json.dumps(request, separators=(",", ":"), allow_nan=False).encode("ascii")
+        if len(encoded) > RECORD_MAX_REQUEST or not os.path.isabs(pith_binary):
+            return
+        deadline = time.monotonic() + max(0.001, timeout)
+        process = subprocess.Popen(
+            [pith_binary, "_record-codex-wrapper"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.communicate(timeout=0.05)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return
+        try:
+            process.communicate(encoded, timeout=remaining)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.communicate(timeout=0.05)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    except (OSError, ValueError, subprocess.SubprocessError, RecursionError):
+        return
+
+
+def _record_codex_proposal(pith_binary: str, family: str, *, timeout: float = RECORD_TIMEOUT_SECONDS) -> None:
+    if family not in _CODEX_PROPOSAL_FAMILIES:
+        return
+    _record_private_observation(pith_binary, {"kind": "proposal", "family": family}, timeout=timeout)
+
+
+def _record_capture_observation(
+    pith_binary: str, outcome: str, elapsed_ms: int | None, selection: str,
+    original_bytes: int | None, delivered_bytes: int | None, *,
+    timeout: float = RECORD_TIMEOUT_SECONDS,
+) -> None:
+    if outcome not in {"complete_within_window", "deadline_stream", "cap_stream", "incomplete"}:
+        return
+    if selection not in {"reduced", "raw", "unknown"}:
+        return
+    if (original_bytes is None) != (delivered_bytes is None):
+        return
+    if elapsed_ms is not None and not 0 <= elapsed_ms <= RECORD_MAX_DURATION_MS:
+        elapsed_ms = None
+    if original_bytes is not None and (
+        not 0 <= original_bytes <= RECORD_MAX_BYTES or
+        not 0 <= delivered_bytes <= RECORD_MAX_BYTES
+    ):
+        original_bytes = delivered_bytes = None
+    if outcome == "incomplete":
+        selection = "unknown"
+        original_bytes = delivered_bytes = None
+    elif outcome != "complete_within_window":
+        selection = "raw"
+    if selection == "reduced" and (
+        original_bytes is None or delivered_bytes is None or delivered_bytes >= original_bytes
+    ):
+        return
+    if selection == "raw" and original_bytes is not None and original_bytes != delivered_bytes:
+        return
+    _record_private_observation(pith_binary, {
+        "kind": "capture", "captureOutcome": outcome, "elapsedMs": elapsed_ms,
+        "selection": selection, "originalBytes": original_bytes,
+        "deliveredBytes": delivered_bytes,
+    }, timeout=timeout)
 
 
 def _pending_cancel() -> bool:
@@ -599,6 +738,7 @@ def run_native(
     stdout_fd: int = 1, writer: Callable[[int, bytes], bool] = _write_all,
     warning_writer: Callable[[str, int | None], None] = _stderr_delivery_warning,
     record_outcome: Callable[[str, bytes, bytes, int, str], None] | None = None,
+    record_observation: Callable[[str, str, int | None, str, int | None, int | None], None] | None = None,
 ) -> int:
     """Run the already-authorized native command once; transform eligible stdout."""
     global _CANCEL_SIGNAL
@@ -648,6 +788,18 @@ def run_native(
 
     captured = bytearray()
     eligible = released and not canceled_before_release
+    capture_started = eligible
+    capture_outcome = "incomplete"
+    original_bytes = 0
+    delivered_bytes = 0
+
+    def publish(data: bytes) -> bool:
+        nonlocal delivered_bytes
+        succeeded = writer(stdout_fd, data)
+        if succeeded:
+            delivered_bytes += len(data)
+        return succeeded
+
     eof = False
     delivery_ok = True
     read_failure = False
@@ -660,8 +812,9 @@ def run_native(
         while not eof or proc.poll() is None:
             remaining = capture_deadline - time.monotonic()
             if eligible and (remaining <= 0 or _CANCEL_SIGNAL is not None):
+                capture_outcome = "incomplete" if _CANCEL_SIGNAL is not None else "deadline_stream"
                 eligible = False
-                if captured and not writer(stdout_fd, bytes(captured)):
+                if captured and not publish(bytes(captured)):
                     delivery_ok = False
                 captured.clear()
 
@@ -711,21 +864,24 @@ def run_native(
             if chunk is None:
                 continue
             read_errors = 0
+            original_bytes += len(chunk)
             if eligible and len(captured) + len(chunk) <= capture_limit:
                 captured.extend(chunk)
                 continue
             if eligible:
+                capture_outcome = "cap_stream"
                 eligible = False
-                if captured and not writer(stdout_fd, bytes(captured)):
+                if captured and not publish(bytes(captured)):
                     delivery_ok = False
                 captured.clear()
-            if delivery_ok and not writer(stdout_fd, chunk):
+            if delivery_ok and not publish(chunk):
                 delivery_ok = False
         native_status = proc.poll()
         native_duration_ms = max(0, (time.monotonic_ns() - native_started_ns) // 1_000_000)
         if eligible and time.monotonic() >= capture_deadline:
+            capture_outcome = "deadline_stream"
             eligible = False
-            if captured and not writer(stdout_fd, bytes(captured)):
+            if captured and not publish(bytes(captured)):
                 delivery_ok = False
             captured.clear()
         if eligible and native_status == 0 and _CANCEL_SIGNAL is None and delivery_ok:
@@ -742,13 +898,18 @@ def run_native(
             if selected is not None:
                 published_stdout = selected
                 published_outcome = "transformed"
-                delivery_ok = writer(stdout_fd, selected)
+                delivery_ok = publish(selected)
             elif delivery_ok:
                 published_stdout = bytes(captured)
-                delivery_ok = writer(stdout_fd, bytes(captured))
+                delivery_ok = publish(bytes(captured))
         elif eligible and delivery_ok:
             published_stdout = bytes(captured)
-            delivery_ok = writer(stdout_fd, bytes(captured))
+            delivery_ok = publish(bytes(captured))
+
+        if capture_outcome not in ("deadline_stream", "cap_stream") and eligible:
+            capture_outcome = "complete_within_window"
+        if read_failure or not delivery_ok:
+            capture_outcome = "incomplete"
 
         if not delivery_ok:
             warning_writer("stdout capture read failed" if read_failure else "stdout publication incomplete", native_status)
@@ -785,13 +946,9 @@ def run_native(
                 try:
                     recorder(pith_binary, bytes(captured), published_stdout, native_duration_ms, published_outcome)
                 except Exception:
-                    # Telemetry is post-publication best effort and cannot change
-                    # the already completed native command result.
+                    # Existing gain accounting remains post-publication and best effort.
                     pass
                 finally:
-                    # Keep cancellation latched while the bounded recorder is
-                    # running, then restore the caller's handlers atomically
-                    # with respect to pending signals.
                     old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _CANCEL_SIGNALS)
                     cancel = _CANCEL_SIGNAL or _pending_cancel_signal()
                     for signum, handler in previous.items():
@@ -801,6 +958,37 @@ def run_native(
                     _reraise(cancel)
         except (UnicodeDecodeError, OverflowError):
             pass
+    if capture_started and native_status is not None:
+        outcome = "incomplete" if read_failure or not delivery_ok else capture_outcome
+        selection = "unknown"
+        known_original: int | None = None
+        known_delivered: int | None = None
+        if outcome != "incomplete":
+            selection = "reduced" if published_outcome == "transformed" else "raw"
+            if original_bytes <= RECORD_MAX_BYTES and delivered_bytes <= RECORD_MAX_BYTES:
+                known_original, known_delivered = original_bytes, delivered_bytes
+        known_duration: int | None = native_duration_ms
+        if not 0 <= native_duration_ms <= RECORD_MAX_DURATION_MS:
+            known_duration = None
+        recorder = record_observation or _record_capture_observation
+        for signum in _CANCEL_SIGNALS:
+            signal.signal(signum, note_cancel)
+        try:
+            recorder(pith_binary, outcome, known_duration, selection, known_original, known_delivered)
+        except Exception:
+            # Telemetry is post-publication best effort and cannot change the
+            # already completed native command result.
+            pass
+        finally:
+            # Keep cancellation latched while the bounded recorder is running,
+            # then restore the caller's handlers atomically with pending signals.
+            old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _CANCEL_SIGNALS)
+            cancel = _CANCEL_SIGNAL or _pending_cancel_signal()
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        if cancel is not None:
+            _reraise(cancel)
     return 125 if native_status is None else native_status
 
 
@@ -832,7 +1020,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError, RecursionError):
             result = _allow()
         else:
-            result = rewrite_hook_input(payload, args.pith_binary)
+            result = rewrite_hook_input(
+                payload, args.pith_binary, record_proposal=_record_codex_proposal,
+            )
     try:
         serialized = json.dumps(result, separators=(",", ":"))
     except (TypeError, ValueError, RecursionError):
