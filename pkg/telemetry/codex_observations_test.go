@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newPrivateObservationStore(t *testing.T) *Telemetry {
@@ -14,7 +16,7 @@ func newPrivateObservationStore(t *testing.T) *Telemetry {
 	if runtime.GOOS == "windows" {
 		t.Skip("private Codex observations require owner-only Unix permissions")
 	}
-	tel, err := NewPrivateTelemetry(t.TempDir())
+	tel, err := NewPrivateTelemetry(filepath.Join(t.TempDir(), "private-telemetry"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +146,7 @@ func TestCodexObservationsRequirePrivateStoreAndStayOutOfExportImportFTSAndDetai
 		})
 	}
 	var ftsCount int
-	if err := tel.DB.QueryRow("SELECT COUNT(*) FROM executions_fts WHERE command MATCH 'other/compound'").Scan(&ftsCount); err != nil || ftsCount != 0 {
+	if err := tel.DB.QueryRow("SELECT COUNT(*) FROM executions_fts WHERE command MATCH 'compound'").Scan(&ftsCount); err != nil || ftsCount != 0 {
 		t.Fatalf("observations reached FTS: count=%d err=%v", ftsCount, err)
 	}
 	details, err := tel.GetDiscoveryDetails("other/compound", "", 10)

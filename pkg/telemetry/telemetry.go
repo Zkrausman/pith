@@ -112,10 +112,10 @@ const SourceCodexWrapperPrivate = "codex-wrapper-private"
 // Codex wrapper observations are local-only, aggregate measurements. Their
 // bounded row count and age apply only to this table, never executions.
 const (
-	CodexObservationMaxRows       = 5000
-	CodexObservationRetentionDays = 90
-	CodexObservationMaxElapsedMs int64 = 24 * 60 * 60 * 1000
-	CodexObservationMaxBytes     int64 = 1 << 40
+	CodexObservationMaxRows             = 5000
+	CodexObservationRetentionDays       = 90
+	CodexObservationMaxElapsedMs  int64 = 24 * 60 * 60 * 1000
+	CodexObservationMaxBytes      int64 = 1 << 40
 )
 
 const (
