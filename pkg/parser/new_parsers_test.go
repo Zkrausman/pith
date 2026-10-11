@@ -22,23 +22,8 @@ func TestSourceParser(t *testing.T) {
 	}`
 
 	output := p.Parse(input)
-	if strings.Contains(output, "// This is a generic comment") {
-		t.Errorf("Expected generic comment to be removed")
-	}
-	if !strings.Contains(output, "// BUG: This is a high-signal comment") {
-		t.Errorf("Expected high-signal BUG comment to be preserved")
-	}
-	if !strings.Contains(output, "TODO: Fix this") {
-		t.Errorf("Expected high-signal TODO block comment to be preserved")
-	}
-	if !strings.Contains(output, "// Inline HACK") {
-		t.Errorf("Expected high-signal inline HACK to be preserved")
-	}
-	if strings.Contains(output, "// Standard inline") {
-		t.Errorf("Expected standard inline comment to be removed")
-	}
-	if !strings.Contains(output, "func main()") {
-		t.Errorf("Expected function signature to be preserved")
+	if output != input {
+		t.Errorf("Source without language context must be preserved exactly; got %q, want %q", output, input)
 	}
 }
 

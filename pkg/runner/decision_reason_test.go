@@ -46,12 +46,13 @@ func TestRunnerDecisionReasons(t *testing.T) {
 		{name: "unsupported", want: telemetry.DecisionUnsupportedParser},
 		{name: "disabled", supported: true, disabled: true, want: telemetry.DecisionUnsupportedParser},
 		{name: "accepted", supported: true, want: telemetry.DecisionTransformed},
-		{name: "accepted-no-op", supported: true, noOp: true, want: telemetry.DecisionTransformed},
+		{name: "accepted-no-op", supported: true, noOp: true, want: telemetry.DecisionUnsupportedParser},
 		{name: "truncate-unsupported", truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-disabled", supported: true, disabled: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-protected", protected: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-skip", skip: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncate-parser", supported: true, truncate: true, want: telemetry.DecisionTransformed},
+		{name: "truncate-no-op-parser", supported: true, noOp: true, truncate: true, want: telemetry.DecisionTransformed},
 		{name: "truncation-no-op", truncationNoOp: true, want: telemetry.DecisionUnsupportedParser},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,7 +104,7 @@ func TestRunnerDecisionReasons(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := input
-			parsed := tc.supported && !tc.disabled && !tc.skip && !tc.protected
+			parsed := tc.supported && !tc.disabled && !tc.skip && !tc.protected && !tc.noOp
 			if parsed && !tc.noOp {
 				want = "parsed:" + want
 			}

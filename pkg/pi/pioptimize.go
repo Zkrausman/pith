@@ -81,7 +81,15 @@ var finalSummaryRegex = regexp.MustCompile(`(?im)\b(?:test files?|tests?|suites?
 var gitInspectionRegex = regexp.MustCompile(`(?i)\bgit\b.*\b(status\b[^\n]*--porcelain|worktree\s+list\b[^\n]*--porcelain|rev-parse\b)`)
 
 func mustPreserveOutput(command, output string, exitCode int) bool {
-	return parser.MayContainShellSyntax(command) || exitCode != 0 || errorMarkerRegex.MatchString(output) || warningMarkerRegex.MatchString(output) || finalSummaryRegex.MatchString(output) || upstreamTruncationRegex.MatchString(output) || gitInspectionRegex.MatchString(command) || isStructuredOutput(output)
+	return mustPreserveOutputWithArgv(command, output, exitCode, false, false)
+}
+
+// mustPreserveOutputWithArgv keeps the legacy command-string syntax veto
+// unchanged. The direct-argv path is supplied only by the Codex wrapper after
+// it has accepted and executed one bounded literal argv; all output, status,
+// warning, diff, truncation, and structured-output guards still apply.
+func mustPreserveOutputWithArgv(command, output string, exitCode int, directArgv, allowStructuredOutput bool) bool {
+	return (!directArgv && parser.MayContainShellSyntax(command)) || exitCode != 0 || errorMarkerRegex.MatchString(output) || warningMarkerRegex.MatchString(output) || finalSummaryRegex.MatchString(output) || upstreamTruncationRegex.MatchString(output) || gitInspectionRegex.MatchString(command) || (!allowStructuredOutput && isStructuredOutput(output))
 }
 
 // secretPatterns redacts common credential shapes before persistence/compression.

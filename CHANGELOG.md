@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-10-11
+
+### Added
+- Route bounded literal Codex Bash commands through existing Pith parsers using their original argv, while keeping shell syntax, interpreters, recursive wrappers, ambiguous `ls` output, source reads, and Git rename status raw.
+- Record only fixed command-family and registered-parser labels with private wrapper execution aggregates; raw fallbacks retain equal-count passthrough accounting.
+
+### Fixed
+- Preserve Git rename rows and full large status captures, treat source and `ls` parser identity outputs as passthrough, and require `Get-Content` parser matches to use an actual command identity.
+- Preserve relative and symlink shebang path spelling for script `$0` and adjacent resource lookup; restore native signal dispositions before either exec path, and drain nonblocking streams raw when both selectors fail.
+- Preserve indented Git status filenames such as `To report.txt` when their text resembles a status heading or guidance line.
+
 ## [3.4.0] - 2026-10-11
 
 ### Added

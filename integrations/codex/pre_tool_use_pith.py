@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex Bash PreToolUse adapter for a narrow, literal Go test command."""
+"""Codex Bash PreToolUse adapter for bounded literal external commands."""
 
 from __future__ import annotations
 
@@ -31,7 +31,10 @@ RECORD_MAX_REQUEST = 2048
 _CANCEL_SIGNALS = {signal.SIGINT, signal.SIGTERM}
 _CANCEL_SIGNAL: int | None = None
 _SUMMARY_OK = re.compile(r"ok\s+\S+\s+\d+(?:\.\d+)?s\Z")
-_PACKAGE = re.compile(r"(?:\.|\./[A-Za-z0-9_./-]+|[A-Za-z0-9_./-]+)\Z")
+_SELECTION_ERROR = re.compile(r"(?i)\[FAIL\]|FAILED|ERROR|panic|traceback|exception|fatal")
+_SELECTION_WARNING = re.compile(r"(?im)^\s*(warning|warn(ing)?\s*:|npm\s+warn\b|\[[^\]]*\bwarn(?:ing)?\b[^\]]*\]|\d{4}-\d\d-\d\d[^\n]*(warning|warn)|⚠)")
+_SELECTION_DIFF = re.compile(r"(?m)^(?:diff --git|@@ |--- (?!PASS:)|\+\+\+ )")
+_SELECTION_TRUNCATION = re.compile(r"(?i)(output|content|results?)\s+(was\s+)?(truncated|trimmed)|truncated\s+by\s+(the\s+)?(host|tool|runner)|\.\.\.\s*output\s+truncated|\.\.\.\s*\(truncated|\[showing\s+(lines|last)\b[^\]]*full output\s*:")
 _RUN = re.compile(r"=== RUN\s+(\S+)\Z")
 _PAUSE = re.compile(r"=== PAUSE\s+\S+\Z")
 _CONT = re.compile(r"=== CONT\s+\S+\Z")
@@ -62,32 +65,214 @@ _CODEX_PROPOSAL_FAMILIES = {
     "python", "pytest", "node", "npx", "cargo", "rustc", "make", "cmake",
     "docker", "kubectl", "terraform", "rg", "grep", "find", "ls", "cat", _FAMILY_OTHER,
 }
+_PARSER_REGISTRY_NAMES = frozenset({
+    "git_composite", "git_status", "git_log", "git_show", "git_diff", "git_branch",
+    "ls", "find", "tree", "du", "grep", "minify", "source", "env", "docker_ps",
+    "gh_release", "github", "dependencies", "tests", "go_cover", "web-content",
+    "pith-internal", "windows-shell", "get-content", "go", "vitest", "bd",
+    "promptfoo", "snag", "node", "npm", "chain",
+})
+# This is a selection-boundary allowlist, not a replacement parser registry:
+# Go still performs matching and transformation. It prevents a transform
+# response from claiming a registered parser that cannot apply to the argv
+# that the adapter actually executed.
+_DIRECT_PARSER_EXECUTABLES = {
+    "git_status": {"git"}, "git_log": {"git"}, "git_show": {"git"},
+    "git_diff": {"git"}, "git_branch": {"git"},
+    "find": {"find", "where"}, "tree": {"tree"}, "du": {"du"},
+    "grep": {"rg", "grep", "ripgrep"}, "minify": {"cat", "type"},
+    "docker_ps": {"docker"}, "gh_release": {"gh"}, "github": {"gh"},
+    "dependencies": {"npm", "pip"}, "tests": {"go", "npm", "pytest"},
+    "go_cover": {"go"}, "web-content": {"curl", "wget", "invoke-webrequest", "iwr"},
+    "go": {"go"}, "vitest": {"vitest", "npx"}, "bd": {"bd"},
+    "promptfoo": {"promptfoo", "npx"}, "snag": {"snag"}, "npm": {"npm"},
+}
+
+_INTERPRETERS = {
+    "ash", "awk", "bash", "cmd", "cmd.exe", "clisp", "clojure", "csi", "dash", "deno",
+    "dotnet", "elixir", "erl", "escript", "fish", "ghci", "groovy", "iex", "java", "js",
+    "julia", "ksh", "lein", "lua", "node", "nodejs", "ocaml", "ocamlrun", "perl", "php",
+    "powershell", "powershell.exe", "pwsh", "python", "python2", "python3", "ruby", "r", "rscript",
+    "runghc", "sbcl", "scala", "scalac", "scheme", "sh", "swift", "swiftc", "tclsh", "tcsh", "zsh",
+}
+_VERSIONED_INTERPRETER = re.compile(r"^(?:python\d+(?:\.\d+)*|pypy\d*|nodejs?|ruby\d+(?:\.\d+)*|php\d+(?:\.\d+)*|perl\d+(?:\.\d+)*)$")
+_RECURSIVE_WRAPPERS = {"pith", "env", "command", "exec", "nohup", "nice", "setsid", "sudo", "doas", "timeout", "xargs", "busybox"}
+_SHELL_BUILTINS = {
+    ".", "alias", "bg", "break", "builtin", "cd", "command", "continue", "declare",
+    "echo", "eval", "exec", "exit", "export", "false", "fc", "fg", "getopts", "hash",
+    "help", "history", "jobs", "let", "local", "logout", "mapfile", "popd", "printf",
+    "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "source",
+    "suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask",
+    "unalias", "unset", "wait", "[",
+}
+_SHELL_RESERVED = {"!", "[[", "]]", "{", "}", "case", "coproc", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "select", "then", "time", "until", "while"}
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def _absolute_go_test(command: str) -> list[str] | None:
-    """Accept one literal, single-package Go test command without shell syntax."""
-    if not command or any(ch in command for ch in "\x00\r\n;&|()<>`$*?[]{}~"):
+def _literal_external_argv(command: str) -> list[str] | None:
+    """Accept a bounded argv-only external command, never shell evaluation."""
+    if not command:
+        return None
+    try:
+        if len(command.encode("utf-8", errors="strict")) > HOOK_INPUT_LIMIT:
+            return None
+    except UnicodeError:
+        return None
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if ch in "\x00\r\n":
+            return None
+        if escaped:
+            if quote == '"' and ch not in '$`"\\':
+                # Bash preserves the backslash here; shlex.split does not.
+                # Avoid executing a different argv than the original shell.
+                return None
+            escaped = False
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            continue
+        if ch == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in "$`":
+                return None
+            continue
+        if quote is None:
+            if ch in "'\"":
+                quote = ch
+                continue
+            if ch in ";|&()<>`$*?[]{}~#!":
+                return None
+    if quote is not None or escaped:
         return None
     try:
         argv = shlex.split(command, posix=True)
-        for value in argv:
-            value.encode("utf-8", errors="strict")
+        encoded = [part.encode("utf-8", errors="strict") for part in argv]
     except (ValueError, UnicodeError):
         return None
-    if len(argv) != 4:
+    if not argv or len(argv) > 256 or sum(map(len, encoded)) > 64 << 10:
         return None
-    executable, subcommand, verbose, package = argv
-    if (
-        not os.path.isabs(executable)
-        or os.path.basename(executable) != "go"
-        or subcommand != "test"
-        or verbose != "-v"
-        or not _PACKAGE.fullmatch(package)
-        or "..." in package
-        or package.startswith("-")
-    ):
+    if argv[0] in _SHELL_RESERVED or _ASSIGNMENT.match(argv[0]):
+        return None
+    if not argv[0] or any("\x00" in part for part in argv):
         return None
     return argv
+
+
+def _family_for_argv(argv: Sequence[str]) -> str:
+    executable = os.path.basename(argv[0].replace("\\", "/")).lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    if executable in _COMMAND_SUBCOMMANDS:
+        subcommand = argv[1].lower() if len(argv) > 1 else ""
+        return f"{executable} {subcommand}" if subcommand in _COMMAND_SUBCOMMANDS[executable] else _FAMILY_OTHER
+    if executable == "python" or (executable.startswith("python") and _VERSIONED_INTERPRETER.fullmatch(executable)):
+        if len(argv) >= 3 and argv[1:3] == ["-m", "pytest"]:
+            return "pytest"
+        return "python"
+    return _SIMPLE_FAMILIES.get(executable, _FAMILY_OTHER)
+
+
+def _is_recursive_pith_form(argv: Sequence[str]) -> bool:
+    name = os.path.basename(argv[0]).lower()
+    command_name = name[:-4] if name.endswith(".exe") else name
+    if command_name in _RECURSIVE_WRAPPERS or (command_name == "go" and len(argv) > 1 and argv[1] == "run"):
+        return True
+    package_launchers = {"npm", "npx", "pnpm", "yarn", "bun"}
+    if command_name in package_launchers and any(
+        os.path.basename(value.replace("\\", "/")).lower() in {"pith", "pith.exe"}
+        for value in argv[1:]
+    ):
+        return True
+    if command_name == "find":
+        invokes_program = any(value in {"-exec", "-execdir", "-ok", "-okdir"} for value in argv[1:])
+        invokes_pith = any(
+            os.path.basename(value.replace("\\", "/")).lower() in {"pith", "pith.exe"}
+            for value in argv[1:]
+        )
+        return invokes_program and invokes_pith
+    return False
+
+
+def _execution_cwd(tool_input: dict[str, object]) -> str | None:
+    if "workdir" not in tool_input:
+        try:
+            return os.path.realpath(os.getcwd())
+        except OSError:
+            return None
+    workdir = tool_input["workdir"]
+    if not isinstance(workdir, str) or not os.path.isabs(workdir):
+        return None
+    resolved = os.path.realpath(workdir)
+    return resolved if os.path.isdir(resolved) else None
+
+
+def _supported_executable_format(path: str) -> bool:
+    """Mirror Bash's direct-exec formats that this wrapper can preserve."""
+    try:
+        with open(path, "rb") as executable:
+            magic = executable.read(4)
+    except OSError:
+        return False
+    # On the supported Linux host, ELF binaries and kernel-interpreted
+    # shebang scripts preserve Bash's native exec behavior. Plain executable
+    # text relies on Bash's ENOEXEC shell fallback, which execve does not do.
+    return magic.startswith(b"#!") or magic == b"\x7fELF"
+
+
+def _resolve_literal_executable(argv: Sequence[str], *, cwd: str | None = None) -> str | None:
+    name = os.path.basename(argv[0]).lower()
+    command_name = name[:-4] if name.endswith(".exe") else name
+    if name in _INTERPRETERS or command_name in _INTERPRETERS or _VERSIONED_INTERPRETER.fullmatch(command_name):
+        return None
+    if _is_recursive_pith_form(argv) or name in _SHELL_BUILTINS:
+        return None
+    shell_options = set(os.environ.get("SHELLOPTS", "").split(":"))
+    bash_options = set(os.environ.get("BASHOPTS", "").split(":"))
+    if os.environ.get("BASH_ENV") or os.environ.get("ENV") or "expand_aliases" in shell_options | bash_options:
+        return None
+    if any(key.startswith("BASH_FUNC_") for key in os.environ):
+        return None
+    if cwd is None:
+        try:
+            cwd = os.path.realpath(os.getcwd())
+        except OSError:
+            return None
+    if "/" in argv[0] or (os.altsep and os.altsep in argv[0]):
+        execution_path = argv[0]
+        validation_path = execution_path if os.path.isabs(execution_path) else os.path.join(cwd, execution_path)
+        if (
+            os.path.isfile(validation_path) and os.access(validation_path, os.X_OK) and
+            _supported_executable_format(validation_path)
+        ):
+            # Keep the path spelling Bash supplied to execve. For shebang
+            # scripts the kernel passes this filename to the interpreter, so
+            # canonicalizing it changes $0 and relative resource lookup.
+            return execution_path
+        return None
+    path_value = os.environ.get("PATH")
+    if not path_value:
+        return None
+    for entry in path_value.split(os.pathsep):
+        # Bash uses ./name for an empty PATH component and retains relative or
+        # symlinked PATH components in the shebang filename passed to execve.
+        directory = entry or "."
+        separator = "" if directory.endswith(os.sep) else os.sep
+        execution_path = directory + separator + argv[0]
+        validation_path = (
+            execution_path if os.path.isabs(execution_path)
+            else os.path.join(cwd, execution_path)
+        )
+        if not os.path.isfile(validation_path) or not os.access(validation_path, os.X_OK):
+            continue
+        return execution_path if _supported_executable_format(validation_path) else None
+    return None
 
 
 def _allow(with_update: dict[str, object] | None = None) -> dict[str, object]:
@@ -112,11 +297,13 @@ def _proposal_family(command: str) -> str:
             value.encode("utf-8", errors="strict")
     except (ValueError, UnicodeError):
         return _FAMILY_OTHER
-    executable = os.path.basename(argv[0]).lower()
+    executable = os.path.basename(argv[0].replace("\\", "/")).lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
     if executable in _COMMAND_SUBCOMMANDS:
         subcommand = argv[1].lower() if len(argv) > 1 else ""
         return f"{executable} {subcommand}" if subcommand in _COMMAND_SUBCOMMANDS[executable] else _FAMILY_OTHER
-    if executable in {"python", "python3", "python3.12"}:
+    if executable == "python" or (executable.startswith("python") and _VERSIONED_INTERPRETER.fullmatch(executable)):
         if len(argv) >= 3 and argv[1:3] == ["-m", "pytest"]:
             return "pytest"
         return "python"
@@ -141,14 +328,16 @@ def rewrite_hook_input(
     if not pith_available:
         return _allow()
     command = tool_input["command"]
-    native = _absolute_go_test(command)
-    if native is None:
+    native = _literal_external_argv(command)
+    execution_cwd = _execution_cwd(tool_input)
+    executable = _resolve_literal_executable(native, cwd=execution_cwd) if native is not None and execution_cwd else None
+    if native is None or executable is None:
         if record_proposal is not None:
             record_proposal(pith_binary, _proposal_family(command))
         return _allow()
     wrapper = [
         os.path.realpath(sys.executable), "-I", "-S", os.path.realpath(__file__),
-        "--run", "--pith-binary", pith_binary, "--", *native,
+        "--run", "--pith-binary", pith_binary, "--resolved-executable", executable, "--", *native,
     ]
     try:
         updated = shlex.join(wrapper)
@@ -236,9 +425,114 @@ def _encode_selected_utf8(value: str) -> bytes | None:
         return None
 
 
-def _selected_output(raw: bytes, response_bytes: bytes) -> bytes | None:
-    summary = _valid_go_verbose_success(raw)
-    if summary is None:
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(value)
+
+
+def _is_strict_json(value: str) -> bool:
+    if not value.strip():
+        return False
+    try:
+        json.loads(value, parse_constant=_reject_json_constant)
+    except (json.JSONDecodeError, RecursionError, ValueError):
+        return False
+    return True
+
+
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--config-env", "--attr-source",
+}
+
+
+def _git_subcommand_parts(argv: Sequence[str]) -> tuple[str, list[str]]:
+    args = list(argv[1:])
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if not arg.startswith("-"):
+            return arg, args[index:]
+        if arg in _GIT_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 1
+        index += 1
+    return "", []
+
+
+def _argv_program(argv: Sequence[str]) -> str:
+    if not argv:
+        return ""
+    name = os.path.basename(argv[0].replace("\\", "/")).lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _go_verbose_success_argv(argv: Sequence[str]) -> bool:
+    if len(argv) != 4 or not os.path.isabs(argv[0]) or _argv_program(argv) != "go":
+        return False
+    package = argv[3]
+    return (
+        argv[1:3] == ["test", "-v"] and bool(package) and
+        not package.startswith("-") and "..." not in package and
+        re.fullmatch(r"(?:\.|\./[A-Za-z0-9_./-]+|[A-Za-z0-9_./-]+)", package) is not None
+    )
+
+
+def _direct_parser_identity_allowed(parser_name: str, argv: Sequence[str], raw_text: str) -> bool:
+    if parser_name not in _PARSER_REGISTRY_NAMES or parser_name not in _DIRECT_PARSER_EXECUTABLES:
+        return False
+    executable = _argv_program(argv)
+    if executable not in _DIRECT_PARSER_EXECUTABLES[parser_name]:
+        return False
+    args = list(argv[1:])
+    if parser_name.startswith("git_"):
+        subcommand, git_args = _git_subcommand_parts(argv)
+        expected = {
+            "git_status": {"status", "add", "commit", "push"},
+            "git_log": {"log"}, "git_show": {"show"},
+            "git_diff": {"diff"}, "git_branch": {"branch"},
+        }.get(parser_name, set())
+        if subcommand not in expected:
+            return False
+        if parser_name == "git_show":
+            return len(git_args) == 1 or (len(git_args) == 2 and git_args[1] == "HEAD")
+        if parser_name == "git_status" and subcommand == "status":
+            if "->" in raw_text:
+                return False
+            if any(arg in {"-z", "--porcelain"} or arg.startswith("--porcelain=") for arg in git_args):
+                records = re.split(r"[\x00\n]", raw_text)
+                if any(record.startswith(("2 ", "R ", " R", "C ", " C")) for record in records):
+                    return False
+        return True
+    if parser_name == "minify":
+        return len(args) == 1 and os.path.splitext(args[0])[1].lower() == ".json"
+    if parser_name == "docker_ps":
+        return bool(args) and args[0] in {"ps", "images"}
+    if parser_name == "gh_release":
+        return len(args) >= 2 and args[0] == "release" and args[1] in {"view", "list"}
+    if parser_name == "github":
+        return bool(args) and args[0] == "status"
+    if parser_name == "dependencies":
+        return bool(args) and ((executable == "npm" and args[0] == "list") or
+                               (executable == "pip" and args[0] == "list"))
+    if parser_name == "tests":
+        return executable == "pytest" or bool(args) and (
+            (executable == "go" and args[0] == "test") or
+            (executable == "npm" and args[0] == "test")
+        )
+    if parser_name == "go_cover":
+        return len(args) >= 3 and args[:2] == ["tool", "cover"]
+    if parser_name == "vitest":
+        return executable == "vitest" or (executable == "npx" and bool(args) and _argv_program(args) == "vitest")
+    if parser_name == "promptfoo":
+        return executable == "promptfoo" or (executable == "npx" and bool(args) and _argv_program(args) == "promptfoo")
+    return True
+
+
+def _selected_output(
+    raw: bytes, response_bytes: bytes, argv: Sequence[str],
+) -> tuple[bytes, str] | None:
+    try:
+        original_text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
         return None
     try:
         response = json.loads(response_bytes.decode("utf-8", errors="strict"))
@@ -247,25 +541,58 @@ def _selected_output(raw: bytes, response_bytes: bytes) -> bytes | None:
     if not isinstance(response, dict):
         return None
     selected = response.get("output")
-    if response.get("parser") != "tests" or response.get("passthrough") is not False or not isinstance(selected, str):
+    parser_name = response.get("parser")
+    if not isinstance(parser_name, str) or not parser_name or response.get("passthrough") is not False or not isinstance(selected, str):
+        return None
+    if not _direct_parser_identity_allowed(parser_name, argv, original_text):
+        return None
+    response_truncated = response.get("upstreamTruncated", False)
+    if response_truncated is not False:
+        return None
+    for count_name in ("omittedLineCount", "omittedByteCount"):
+        if count_name in response:
+            count = response[count_name]
+            if not isinstance(count, int) or isinstance(count, bool) or count != 0:
+                return None
+    validated_go_success = parser_name == "tests" and _go_verbose_success_argv(argv) and _valid_go_verbose_success(raw) is not None
+    if parser_name == "tests" and _argv_program(argv) == "go" and not validated_go_success:
+        return None
+    if _SELECTION_ERROR.search(original_text) and not validated_go_success:
+        return None
+    if (
+        _SELECTION_WARNING.search(original_text) or _SELECTION_DIFF.search(original_text) or
+        _SELECTION_TRUNCATION.search(original_text)
+    ):
+        return None
+    if _is_strict_json(original_text) and parser_name != "minify":
         return None
     encoded = _encode_selected_utf8(selected)
     if encoded is None:
         return None
-    lines = [line.strip() for line in selected.splitlines() if line.strip()]
-    if lines != [summary[0], summary[1]]:
+    original_count = response.get("originalByteCount")
+    retained_count = response.get("retainedByteCount")
+    if (
+        not isinstance(original_count, int) or isinstance(original_count, bool) or
+        not isinstance(retained_count, int) or isinstance(retained_count, bool) or
+        original_count != len(raw) or retained_count != len(encoded)
+    ):
         return None
-    if not encoded or len(encoded) >= len(raw):
+    if not encoded or len(encoded) >= len(raw) or len(selected) >= len(original_text):
         return None
-    return encoded
+    return encoded, parser_name
 
 
 def _record_wrapper_outcome(
     pith_binary: str, original: bytes, delivered: bytes, duration_ms: int,
-    outcome: str, *, timeout: float = RECORD_TIMEOUT_SECONDS,
+    outcome: str, family: str, parser_name: str, *, timeout: float = RECORD_TIMEOUT_SECONDS,
 ) -> None:
     """Best-effort aggregate accounting after stdout publication; never retain text."""
-    if outcome not in ("transformed", "raw_fallback") or duration_ms < 0 or duration_ms > RECORD_MAX_DURATION_MS:
+    if (
+        outcome not in ("transformed", "raw_fallback") or family not in _CODEX_PROPOSAL_FAMILIES or
+        duration_ms < 0 or duration_ms > RECORD_MAX_DURATION_MS or
+        (outcome == "transformed" and not parser_name) or
+        (outcome == "raw_fallback" and parser_name)
+    ):
         return
     try:
         original_text = original.decode("utf-8", errors="strict")
@@ -274,12 +601,13 @@ def _record_wrapper_outcome(
         delivered_runes = len(delivered_text)
         if original_runes > RECORD_MAX_RUNES or delivered_runes > RECORD_MAX_RUNES:
             return
-        if outcome == "raw_fallback" and original_runes != delivered_runes:
+        if outcome == "raw_fallback" and (original != delivered or original_runes != delivered_runes):
             return
-        if outcome == "transformed" and delivered_runes > original_runes:
+        if outcome == "transformed" and (len(delivered) >= len(original) or delivered_runes >= original_runes):
             return
         request = json.dumps(
-            {"originalRunes": original_runes, "deliveredRunes": delivered_runes,
+            {"kind": "execution", "family": family, "parser": parser_name,
+             "originalRunes": original_runes, "deliveredRunes": delivered_runes,
              "durationMs": duration_ms, "outcome": outcome},
             separators=(",", ":"), allow_nan=False,
         ).encode("ascii")
@@ -461,6 +789,7 @@ def _gated_exec_main(gate_fd: int, executable: str, argv: Sequence[str]) -> int:
         pass
     if token != b"G" or _pending_cancel():
         return 125
+    _restore_native_signal_dispositions()
     signal.pthread_sigmask(signal.SIG_UNBLOCK, _CANCEL_SIGNALS)
     try:
         os.execve(executable, list(argv), os.environ)
@@ -473,7 +802,7 @@ def _gated_exec_main(gate_fd: int, executable: str, argv: Sequence[str]) -> int:
 
 def _spawn_gated(
     argv: Sequence[str], *, stdin: int | None, stdout: int, stderr: int | None,
-    launch_deadline: float | None = None,
+    launch_deadline: float | None = None, executable: str | None = None,
 ) -> tuple[subprocess.Popen[bytes] | None, bool, bool, bool]:
     """Return process, gate released, canceled before release, spawn failure."""
     if launch_deadline is not None and time.monotonic() >= launch_deadline:
@@ -494,7 +823,7 @@ def _spawn_gated(
             command = [
                 os.path.realpath(sys.executable), "-I", "-S", os.path.realpath(__file__),
                 "--gated-exec", "--gate-fd", str(gate_read),
-                "--executable", argv[0], "--", *argv,
+                "--executable", executable or argv[0], "--", *argv,
             ]
             try:
                 proc = subprocess.Popen(
@@ -539,25 +868,32 @@ def _new_pipe_poller(*fds: int) -> select.poll:
 
 
 def _wait_fd(poller: select.poll, fd: int, timeout_ms: int) -> bool:
+    ready_fds, wait_failed = _wait_fds(poller, (fd,), timeout_ms)
+    return bool(ready_fds) or wait_failed
+
+
+def _wait_fds(poller: select.poll, fds: Sequence[int], timeout_ms: int) -> tuple[set[int], bool]:
     try:
-        return any(ready_fd == fd for ready_fd, _ in poller.poll(timeout_ms))
+        return {ready_fd for ready_fd, _ in poller.poll(timeout_ms)}, False
     except InterruptedError:
-        return False
+        pass
     except OSError:
-        try:
-            readable, writable, exceptional = select.select([fd], [fd], [fd], timeout_ms / 1000)
-            return bool(readable or writable or exceptional)
-        except (OSError, ValueError):
-            return False
+        pass
+    try:
+        readable, writable, exceptional = select.select(list(fds), list(fds), list(fds), timeout_ms / 1000)
+        return set(readable + writable + exceptional), False
+    except (OSError, ValueError):
+        return set(), True
 
 
 def _run_transform(
     pith_binary: str, command: str, output: bytes, deadline: float, *,
+    argv: Sequence[str] = (),
     output_limit: int = TRANSFORM_OUTPUT_LIMIT,
     native_status: int | None = 0,
     warning_writer: Callable[[str, int | None], None] = _stderr_delivery_warning,
 ) -> bytes | None:
-    if time.monotonic() >= deadline or _valid_go_verbose_success(output) is None or _CANCEL_SIGNAL is not None:
+    if time.monotonic() >= deadline or native_status != 0 or _CANCEL_SIGNAL is not None:
         return None
     try:
         text = output.decode("utf-8", errors="strict")
@@ -565,7 +901,8 @@ def _run_transform(
         return None
     try:
         request = json.dumps(
-            {"command": command, "output": text, "exitCode": 0, "rawBypass": False, "telemetryEnabled": False},
+            {"command": command, "argv": list(argv), "output": text, "exitCode": native_status,
+             "rawBypass": False, "telemetryEnabled": False},
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8", errors="strict")
     except (UnicodeEncodeError, RecursionError, ValueError):
@@ -703,9 +1040,21 @@ def _run_transform(
     return bytes(response)
 
 
-def _exec_original(argv: Sequence[str]) -> int:
+def _restore_native_signal_dispositions() -> None:
+    """Undo Python/Popen ignored signals before handing control to native code."""
+    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            signal.signal(signum, signal.SIG_DFL)
+
+
+def _exec_original(argv: Sequence[str], executable: str | None = None) -> int:
     try:
-        os.execve(argv[0], list(argv), os.environ)
+        _restore_native_signal_dispositions()
+        if executable is not None:
+            os.execve(executable, list(argv), os.environ)
+        else:
+            os.execvpe(argv[0], list(argv), os.environ)
     except FileNotFoundError:
         return 127
     except OSError:
@@ -713,7 +1062,7 @@ def _exec_original(argv: Sequence[str]) -> int:
     return 126
 
 
-def _exec_after_setup_failure(argv: Sequence[str], previous: dict[int, object]) -> int:
+def _exec_after_setup_failure(argv: Sequence[str], previous: dict[int, object], executable: str | None = None) -> int:
     """Choose cancellation or direct native fallback without a signal gap."""
     old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _CANCEL_SIGNALS)
     cancel = _CANCEL_SIGNAL or _pending_cancel_signal()
@@ -728,26 +1077,29 @@ def _exec_after_setup_failure(argv: Sequence[str], previous: dict[int, object]) 
     for signum in _CANCEL_SIGNALS:
         signal.signal(signum, signal.SIG_DFL)
     signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-    return _exec_original(argv)
+    return _exec_original(argv, executable)
 
 
 def run_native(
     argv: Sequence[str], pith_binary: str, *,
+    resolved_executable: str | None = None,
     capture_limit: int = CAPTURE_LIMIT, capture_seconds: float = CAPTURE_SECONDS,
     transform_seconds: float = TRANSFORM_SECONDS,
     stdout_fd: int = 1, writer: Callable[[int, bytes], bool] = _write_all,
     warning_writer: Callable[[str, int | None], None] = _stderr_delivery_warning,
-    record_outcome: Callable[[str, bytes, bytes, int, str], None] | None = None,
+    record_outcome: Callable[..., None] | None = None,
     record_observation: Callable[[str, str, int | None, str, int | None, int | None], None] | None = None,
 ) -> int:
     """Run the already-authorized native command once; transform eligible stdout."""
     global _CANCEL_SIGNAL
-    if not argv or not os.path.isabs(argv[0]):
+    if not argv or not (os.path.isabs(argv[0]) or resolved_executable):
         return 126
     if _must_exec_original():
-        return _exec_original(argv)
-    if _absolute_go_test(shlex.join(list(argv))) != list(argv):
-        return _exec_original(argv)
+        return _exec_original(argv, resolved_executable)
+    if resolved_executable is not None and (
+        not os.path.isfile(resolved_executable) or not os.access(resolved_executable, os.X_OK)
+    ):
+        return 126
 
     _CANCEL_SIGNAL = None
     previous: dict[int, object] = {}
@@ -761,30 +1113,42 @@ def run_native(
         previous[signum] = signal.signal(signum, note_cancel)
 
     try:
-        read_fd, write_fd = os.pipe()
-        os.set_blocking(read_fd, False)
-        poller = _new_pipe_poller(read_fd)
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        os.set_blocking(stdout_read, False)
+        os.set_blocking(stderr_read, False)
+        poller = _new_pipe_poller(stdout_read, stderr_read)
     except OSError:
-        for fd in (locals().get("read_fd"), locals().get("write_fd")):
+        for fd in (locals().get("stdout_read"), locals().get("stdout_write"),
+                   locals().get("stderr_read"), locals().get("stderr_write")):
             if isinstance(fd, int):
                 try:
                     os.close(fd)
                 except OSError:
                     pass
-        return _exec_after_setup_failure(argv, previous)
+        return _exec_after_setup_failure(argv, previous, resolved_executable)
 
     capture_deadline = time.monotonic() + capture_seconds
     native_started_ns = time.monotonic_ns()
-    proc, released, canceled_before_release, spawn_failed = _spawn_gated(
-        argv, stdin=None, stdout=write_fd, stderr=None,
-    )
-    os.close(write_fd)
+    spawn_kwargs = {"stdin": None, "stdout": stdout_write, "stderr": stderr_write}
+    if resolved_executable is not None:
+        spawn_kwargs["executable"] = resolved_executable
+    proc, released, canceled_before_release, spawn_failed = _spawn_gated(argv, **spawn_kwargs)
+    os.close(stdout_write)
+    os.close(stderr_write)
     if proc is None or spawn_failed:
         if proc is not None:
             _stop_reap(proc)
-        os.close(read_fd)
-        poller.unregister(read_fd)
-        return _exec_after_setup_failure(argv, previous)
+        for fd in (stdout_read, stderr_read):
+            try:
+                poller.unregister(fd)
+            except (KeyError, OSError):
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return _exec_after_setup_failure(argv, previous, resolved_executable)
 
     captured = bytearray()
     eligible = released and not canceled_before_release
@@ -792,135 +1156,203 @@ def run_native(
     capture_outcome = "incomplete"
     original_bytes = 0
     delivered_bytes = 0
+    stdout_delivery_ok = True
+    stderr_delivery_ok = True
 
     def publish(data: bytes) -> bool:
-        nonlocal delivered_bytes
+        nonlocal delivered_bytes, stdout_delivery_ok
+        if not stdout_delivery_ok:
+            return False
         succeeded = writer(stdout_fd, data)
         if succeeded:
             delivered_bytes += len(data)
+        else:
+            stdout_delivery_ok = False
         return succeeded
 
-    eof = False
-    delivery_ok = True
+    stdout_eof = False
+    stderr_eof = False
+    stderr_observed = False
     read_failure = False
-    read_errors = 0
+    stdout_read_errors = 0
+    stderr_read_errors = 0
     native_status: int | None = None
     native_duration_ms = 0
     published_stdout: bytes | None = None
     published_outcome = "raw_fallback"
+    selected_parser = ""
+
+    def close_read_fd(fd: int) -> None:
+        try:
+            poller.unregister(fd)
+        except (KeyError, OSError):
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
     try:
-        while not eof or proc.poll() is None:
+        while not (stdout_eof and stderr_eof) or proc.poll() is None:
             remaining = capture_deadline - time.monotonic()
             if eligible and (remaining <= 0 or _CANCEL_SIGNAL is not None):
                 capture_outcome = "incomplete" if _CANCEL_SIGNAL is not None else "deadline_stream"
                 eligible = False
                 if captured and not publish(bytes(captured)):
-                    delivery_ok = False
+                    stdout_delivery_ok = False
                 captured.clear()
 
-            if eof:
-                time.sleep(0.005)
-                continue
             timeout_ms = min(50, max(1, int(remaining * 1000))) if eligible else 50
-            ready = _wait_fd(poller, read_fd, timeout_ms)
-            if not ready:
-                # If poll/select both failed, nonblocking reads still let us
-                # drain whenever bytes arrive while the deadline advances.
-                time.sleep(0.005)
-                ready = True
-            max_read = min(READ_CHUNK, max(1, capture_limit - len(captured) + 1)) if eligible else READ_CHUNK
-            try:
-                chunk = os.read(read_fd, max_read) if ready else None
-            except (BlockingIOError, InterruptedError):
-                continue
-            except OSError:
-                eligible = False
-                if captured and not writer(stdout_fd, bytes(captured)):
-                    delivery_ok = False
-                captured.clear()
-                read_errors += 1
-                if read_errors < 3:
-                    # A transient read error must not turn into a wait on the
-                    # child with its pipe undrained. Retry briefly in raw mode.
-                    time.sleep(0.005)
-                    continue
+            active_fds = tuple(
+                fd for fd, eof in ((stdout_read, stdout_eof), (stderr_read, stderr_eof)) if not eof
+            )
+            ready_fds, wait_failed = _wait_fds(poller, active_fds, timeout_ms)
+            if wait_failed:
+                # Selector failure is uncertain capture, not a timeout. Switch
+                # to raw and probe every nonblocking pipe so a native writer
+                # cannot fill a pipe and deadlock. The native command is never
+                # replayed after this point.
                 read_failure = True
-                delivery_ok = False
+                if eligible:
+                    eligible = False
+                    capture_outcome = "incomplete"
+                    if captured and not publish(bytes(captured)):
+                        stdout_delivery_ok = False
+                    captured.clear()
+                ready_fds = set(active_fds)
+            if not ready_fds:
+                time.sleep(0.005)
+            drained_stream = False
+            # Drain stderr first. Its first byte disables transformation and
+            # releases any buffered stdout before relaying stderr unchanged.
+            if stderr_read in ready_fds and not stderr_eof:
                 try:
-                    poller.unregister(read_fd)
-                except (KeyError, OSError):
-                    pass
-                try:
-                    os.close(read_fd)
+                    stderr_chunk = os.read(stderr_read, READ_CHUNK)
+                except (BlockingIOError, InterruptedError):
+                    stderr_chunk = None
                 except OSError:
-                    pass
-                eof = True
-                continue
-            if chunk == b"":
-                eof = True
-                poller.unregister(read_fd)
-                os.close(read_fd)
-                continue
-            if chunk is None:
-                continue
-            read_errors = 0
-            original_bytes += len(chunk)
-            if eligible and len(captured) + len(chunk) <= capture_limit:
-                captured.extend(chunk)
-                continue
-            if eligible:
-                capture_outcome = "cap_stream"
-                eligible = False
-                if captured and not publish(bytes(captured)):
-                    delivery_ok = False
-                captured.clear()
-            if delivery_ok and not publish(chunk):
-                delivery_ok = False
+                    stderr_read_errors += 1
+                    read_failure = True
+                    if eligible:
+                        eligible = False
+                        capture_outcome = "incomplete"
+                        if captured and not publish(bytes(captured)):
+                            stdout_delivery_ok = False
+                        captured.clear()
+                    if stderr_read_errors >= 3:
+                        stderr_delivery_ok = False
+                        stderr_eof = True
+                        close_read_fd(stderr_read)
+                    stderr_chunk = None
+                if stderr_chunk is not None:
+                    drained_stream = True
+                if stderr_chunk == b"":
+                    stderr_eof = True
+                    close_read_fd(stderr_read)
+                elif stderr_chunk:
+                    stderr_observed = True
+                    if eligible:
+                        eligible = False
+                        if captured and not publish(bytes(captured)):
+                            stdout_delivery_ok = False
+                        captured.clear()
+                    # Continue relaying native stderr even if stdout delivery
+                    # already failed; the streams have independent destinations.
+                    if not _write_all(2, stderr_chunk):
+                        stderr_delivery_ok = False
+                if not stderr_eof and stderr_chunk is not None:
+                    stderr_read_errors = 0
+
+            if stdout_read in ready_fds and not stdout_eof:
+                max_read = min(READ_CHUNK, max(1, capture_limit - len(captured) + 1)) if eligible else READ_CHUNK
+                try:
+                    chunk = os.read(stdout_read, max_read)
+                except (BlockingIOError, InterruptedError):
+                    chunk = None
+                except OSError:
+                    stdout_read_errors += 1
+                    capture_outcome = "incomplete"
+                    if eligible:
+                        eligible = False
+                        if captured and not publish(bytes(captured)):
+                            stdout_delivery_ok = False
+                        captured.clear()
+                    if stdout_read_errors >= 3:
+                        read_failure = True
+                        stdout_delivery_ok = False
+                        stdout_eof = True
+                        close_read_fd(stdout_read)
+                    chunk = None
+                if chunk is not None:
+                    drained_stream = True
+                if chunk == b"":
+                    stdout_eof = True
+                    close_read_fd(stdout_read)
+                elif chunk:
+                    stdout_read_errors = 0
+                    original_bytes += len(chunk)
+                    if eligible and len(captured) + len(chunk) <= capture_limit:
+                        captured.extend(chunk)
+                    else:
+                        if eligible:
+                            capture_outcome = "cap_stream"
+                            eligible = False
+                            if captured and not publish(bytes(captured)):
+                                stdout_delivery_ok = False
+                            captured.clear()
+                        if stdout_delivery_ok:
+                            publish(chunk)
+            if wait_failed and not drained_stream:
+                time.sleep(0.005)
         native_status = proc.poll()
         native_duration_ms = max(0, (time.monotonic_ns() - native_started_ns) // 1_000_000)
+        native_settled_at = time.monotonic()
+        if stderr_observed and not read_failure and capture_outcome == "incomplete":
+            capture_outcome = "complete_within_window" if native_settled_at < capture_deadline else "deadline_stream"
         if eligible and time.monotonic() >= capture_deadline:
             capture_outcome = "deadline_stream"
             eligible = False
             if captured and not publish(bytes(captured)):
-                delivery_ok = False
+                stdout_delivery_ok = False
             captured.clear()
-        if eligible and native_status == 0 and _CANCEL_SIGNAL is None and delivery_ok:
+        if eligible and native_status == 0 and _CANCEL_SIGNAL is None and stdout_delivery_ok and stderr_delivery_ok:
             transform_deadline = time.monotonic() + transform_seconds
             transformed = _run_transform(
                 pith_binary, shlex.join(list(argv)), bytes(captured), transform_deadline,
-                native_status=native_status, warning_writer=warning_writer,
+                argv=argv, native_status=native_status, warning_writer=warning_writer,
             )
             selected = (
-                _selected_output(bytes(captured), transformed)
+                _selected_output(bytes(captured), transformed, argv)
                 if transformed is not None and _CANCEL_SIGNAL is None and time.monotonic() < transform_deadline
                 else None
             )
             if selected is not None:
-                published_stdout = selected
+                published_stdout, selected_parser = selected
                 published_outcome = "transformed"
-                delivery_ok = publish(selected)
-            elif delivery_ok:
+                publish(published_stdout)
+            elif stdout_delivery_ok:
                 published_stdout = bytes(captured)
-                delivery_ok = publish(bytes(captured))
-        elif eligible and delivery_ok:
+                publish(bytes(captured))
+        elif eligible and stdout_delivery_ok and stderr_delivery_ok:
             published_stdout = bytes(captured)
-            delivery_ok = publish(bytes(captured))
+            publish(bytes(captured))
 
         if capture_outcome not in ("deadline_stream", "cap_stream") and eligible:
             capture_outcome = "complete_within_window"
+        delivery_ok = stdout_delivery_ok and stderr_delivery_ok
         if read_failure or not delivery_ok:
             capture_outcome = "incomplete"
 
         if not delivery_ok:
-            warning_writer("stdout capture read failed" if read_failure else "stdout publication incomplete", native_status)
+            warning_writer("captured stream read failed" if read_failure else "native stream publication incomplete", native_status)
     finally:
+        if not stdout_eof:
+            close_read_fd(stdout_read)
+        if not stderr_eof:
+            close_read_fd(stderr_read)
         try:
-            poller.unregister(read_fd)
-        except (KeyError, OSError):
-            pass
-        try:
-            os.close(read_fd)
-        except OSError:
+            poller.close()
+        except (AttributeError, OSError):
             pass
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -944,7 +1376,10 @@ def run_native(
                 for signum in _CANCEL_SIGNALS:
                     signal.signal(signum, note_cancel)
                 try:
-                    recorder(pith_binary, bytes(captured), published_stdout, native_duration_ms, published_outcome)
+                    recorder(
+                        pith_binary, bytes(captured), published_stdout, native_duration_ms,
+                        published_outcome, _family_for_argv(argv), selected_parser,
+                    )
                 except Exception:
                     # Existing gain accounting remains post-publication and best effort.
                     pass
@@ -996,6 +1431,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--pith-binary")
+    parser.add_argument("--resolved-executable")
     parser.add_argument("--gated-exec", action="store_true")
     parser.add_argument("--gate-fd", type=int)
     parser.add_argument("--executable")
@@ -1008,7 +1444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.run:
         if not args.pith_binary:
             return 126
-        return run_native(native, args.pith_binary)
+        return run_native(native, args.pith_binary, resolved_executable=args.resolved_executable)
     if not args.pith_binary:
         result = _allow()
     else:
