@@ -146,7 +146,7 @@ func TestCodexHookInstallPreservesConfigAndIsIdempotent(t *testing.T) {
 		t.Fatalf("Pith handlers = %d, want one", len(pithHandlers))
 	}
 	pithHandler := pithHandlers[0].(map[string]any)
-	wantCommand := quotePOSIX("python3") + " -I -S " + quotePOSIX(result.AdapterPath) + " --pith-binary " + quotePOSIX(result.BinaryPath)
+	wantCommand := quotePOSIX(filepath.Join(string(os.PathSeparator), "usr", "bin", "python3")) + " -I -S " + quotePOSIX(result.AdapterPath) + " --pith-binary " + quotePOSIX(result.BinaryPath)
 	if pithHandler["command"] != wantCommand {
 		t.Fatalf("hook command = %q, want %q", pithHandler["command"], wantCommand)
 	}
@@ -188,6 +188,98 @@ func TestCodexHookInstallPreservesConfigAndIsIdempotent(t *testing.T) {
 	if pithCount != 1 {
 		t.Fatalf("Pith handlers after repeat install = %d, want one", pithCount)
 	}
+}
+
+func TestCodexHookInstallUsesAbsoluteInterpreterFromRuntimePATH(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pythonDir := filepath.Join(root, "runtime path with 'quotes")
+	pythonPath := fakeExecutable(t, filepath.Join(pythonDir, "python3"), []byte("fake python executable"))
+	t.Setenv("PATH", pythonDir)
+	resolvedPython, err := findCodexHookPython()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(resolvedPython) || resolvedPython != pythonPath {
+		t.Fatalf("resolved Python path = %q, want absolute runtime PATH entry %q", resolvedPython, pythonPath)
+	}
+	source := fakeExecutable(t, filepath.Join(root, "source", "pith"), []byte("fake pith"))
+	settings := filepath.Join(home, ".codex", "hooks.json")
+	if err := os.WriteFile(settings, []byte(`{"hooks":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := setupCodexPreToolUseHookWithPython(home, source, resolvedPython, []byte("adapter"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(mustRead(t, settings), &config); err != nil {
+		t.Fatal(err)
+	}
+	hooks := config["hooks"].(map[string]any)
+	groups := hooks["PreToolUse"].([]any)
+	handler := groups[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	wantCommand := quotePOSIX(resolvedPython) + " -I -S " + quotePOSIX(result.AdapterPath) + " --pith-binary " + quotePOSIX(result.BinaryPath)
+	if handler["command"] != wantCommand {
+		t.Fatalf("installed command = %q, want runtime PATH interpreter %q", handler["command"], wantCommand)
+	}
+}
+
+func TestCodexHookInstallPreservesManagedHandlerFieldsOnInterpreterChange(t *testing.T) {
+	adapterPath := "/home/test/.pith/hooks/codex/pre_tool_use_pith.py"
+	binaryPath := "/home/test/.pith/bin/pith"
+	oldCommand := quotePOSIX("python3") + " -I -S " + quotePOSIX(adapterPath) + " --pith-binary " + quotePOSIX(binaryPath)
+	newCommand := quotePOSIX("/new/python3") + " -I -S " + quotePOSIX(adapterPath) + " --pith-binary " + quotePOSIX(binaryPath)
+	root := map[string]json.RawMessage{
+		"hooks": json.RawMessage(`{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"type":"command","command":` + mustJSONString(t, oldCommand) + `,"statusMessage":` + mustJSONString(t, codexHookStatusMessage) + `,"timeout":29,"custom":{"keep":[1,{"value":"yes"}]}}]}]}`),
+	}
+	updated, err := withCodexPreToolUseHook(root, newCommand, adapterPath, binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(updated, &config); err != nil {
+		t.Fatal(err)
+	}
+	groups := config["hooks"].(map[string]any)["PreToolUse"].([]any)
+	group := groups[0].(map[string]any)
+	if len(groups) != 1 {
+		t.Fatalf("PreToolUse groups = %d, want the existing managed group updated in place", len(groups))
+	}
+	handler := group["hooks"].([]any)[0].(map[string]any)
+	if handler["command"] != newCommand || handler["statusMessage"] != codexHookStatusMessage {
+		t.Fatalf("managed fields not updated: %#v", handler)
+	}
+	if handler["timeout"] != float64(29) || !equalJSONValue(t, handler["custom"], map[string]any{"keep": []any{float64(1), map[string]any{"value": "yes"}}}) {
+		t.Fatalf("user handler fields were lost: %#v", handler)
+	}
+}
+
+func TestManagedCodexCommandRecognizesQuotedAbsoluteInterpreter(t *testing.T) {
+	adapterPath := "/home/test/.pith/hooks/codex/pre_tool_use_pith.py"
+	binaryPath := "/home/test/.pith/bin/pith"
+	for _, interpreter := range []string{"/old/python3", "/path/with 'quotes/python3"} {
+		command := quotePOSIX(interpreter) + " -I -S " + quotePOSIX(adapterPath) + " --pith-binary " + quotePOSIX(binaryPath)
+		if !isManagedCodexCommand(command, adapterPath, binaryPath) {
+			t.Errorf("managed command with interpreter %q was not recognized", interpreter)
+		}
+	}
+	userCommand := quotePOSIX("python3") + " -I -S /other/adapter.py --pith-binary " + quotePOSIX(binaryPath)
+	if isManagedCodexCommand(userCommand, adapterPath, binaryPath) {
+		t.Fatal("a command for a different adapter was recognized as Pith-owned")
+	}
+}
+
+func mustJSONString(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 func TestCodexHookInstallRejectsMalformedConfigWithoutOverwrite(t *testing.T) {

@@ -45,17 +45,42 @@ func SetupCodexPreToolUseHook(adapter []byte) (CodexHookInstallResult, error) {
 	if err != nil {
 		return CodexHookInstallResult{}, fmt.Errorf("resolve Pith executable: %w", err)
 	}
-	if _, err := exec.LookPath("python3"); err != nil {
-		return CodexHookInstallResult{}, fmt.Errorf("find supported Python 3 interpreter: %w", err)
+	pythonExecutable, err := findCodexHookPython()
+	if err != nil {
+		return CodexHookInstallResult{}, err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return CodexHookInstallResult{}, fmt.Errorf("locate user home: %w", err)
 	}
-	return setupCodexPreToolUseHook(home, executable, adapter)
+	return setupCodexPreToolUseHookWithPython(home, executable, pythonExecutable, adapter)
 }
 
 func setupCodexPreToolUseHook(home, sourceBinary string, adapter []byte) (result CodexHookInstallResult, returnErr error) {
+	return setupCodexPreToolUseHookWithPython(home, sourceBinary, filepath.Join(string(os.PathSeparator), "usr", "bin", "python3"), adapter)
+}
+
+func findCodexHookPython() (string, error) {
+	pythonExecutable, err := exec.LookPath("python3")
+	if err != nil {
+		return "", fmt.Errorf("find supported Python 3 interpreter: %w", err)
+	}
+	pythonExecutable, err = filepath.Abs(pythonExecutable)
+	if err != nil {
+		return "", fmt.Errorf("resolve supported Python 3 interpreter path: %w", err)
+	}
+	pythonExecutable, err = filepath.EvalSymlinks(pythonExecutable)
+	if err != nil {
+		return "", fmt.Errorf("resolve supported Python 3 interpreter: %w", err)
+	}
+	info, err := os.Stat(pythonExecutable)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("supported Python 3 interpreter is unavailable or not executable: %s", pythonExecutable)
+	}
+	return pythonExecutable, nil
+}
+
+func setupCodexPreToolUseHookWithPython(home, sourceBinary, pythonExecutable string, adapter []byte) (result CodexHookInstallResult, returnErr error) {
 	if runtime.GOOS == "windows" {
 		return CodexHookInstallResult{}, errors.New("pith --hooks currently supports Linux and macOS only")
 	}
@@ -68,6 +93,9 @@ func setupCodexPreToolUseHook(home, sourceBinary string, adapter []byte) (result
 	}
 	if !filepath.IsAbs(sourceBinary) {
 		return result, errors.New("Pith path must be absolute")
+	}
+	if !filepath.IsAbs(pythonExecutable) {
+		return result, errors.New("Python 3 interpreter path must be absolute")
 	}
 	binaryInfo, err := os.Stat(sourceBinary)
 	if err != nil || !binaryInfo.Mode().IsRegular() || binaryInfo.Mode().Perm()&0111 == 0 {
@@ -103,8 +131,8 @@ func setupCodexPreToolUseHook(home, sourceBinary string, adapter []byte) (result
 	if err != nil {
 		return result, err
 	}
-	command := quotePOSIX("python3") + " -I -S " + quotePOSIX(result.AdapterPath) + " --pith-binary " + quotePOSIX(result.BinaryPath)
-	updatedSettings, err := withCodexPreToolUseHook(settings, command)
+	command := quotePOSIX(pythonExecutable) + " -I -S " + quotePOSIX(result.AdapterPath) + " --pith-binary " + quotePOSIX(result.BinaryPath)
+	updatedSettings, err := withCodexPreToolUseHook(settings, command, result.AdapterPath, result.BinaryPath)
 	if err != nil {
 		return result, err
 	}
@@ -517,7 +545,7 @@ func consumeJSONValue(decoder *json.Decoder, depth int) error {
 	return nil
 }
 
-func withCodexPreToolUseHook(root map[string]json.RawMessage, command string) ([]byte, error) {
+func withCodexPreToolUseHook(root map[string]json.RawMessage, command, adapterPath, binaryPath string) ([]byte, error) {
 	root = cloneRawMap(root)
 	var hooks map[string]json.RawMessage
 	if raw, ok := root["hooks"]; ok {
@@ -544,6 +572,7 @@ func withCodexPreToolUseHook(root map[string]json.RawMessage, command string) ([
 	}
 
 	updatedGroups := make([]json.RawMessage, 0, len(groups)+1)
+	managedHandlerFound := false
 	for _, rawGroup := range groups {
 		var group map[string]json.RawMessage
 		if err := json.Unmarshal(rawGroup, &group); err != nil || group == nil {
@@ -558,6 +587,7 @@ func withCodexPreToolUseHook(root map[string]json.RawMessage, command string) ([
 			return nil, errors.New("refusing to overwrite malformed PreToolUse handlers in Codex hooks.json")
 		}
 		filtered := make([]json.RawMessage, 0, len(handlers))
+		groupHasManagedHandler := false
 		for _, rawHandler := range handlers {
 			var handler map[string]json.RawMessage
 			if err := json.Unmarshal(rawHandler, &handler); err != nil || handler == nil {
@@ -565,23 +595,36 @@ func withCodexPreToolUseHook(root map[string]json.RawMessage, command string) ([
 			}
 			var status string
 			var existingCommand string
-			if marker, ok := handler["statusMessage"]; ok && json.Unmarshal(marker, &status) == nil && status == codexHookStatusMessage && json.Unmarshal(handler["command"], &existingCommand) == nil && existingCommand == command {
+			if marker, ok := handler["statusMessage"]; ok && json.Unmarshal(marker, &status) == nil && status == codexHookStatusMessage && json.Unmarshal(handler["command"], &existingCommand) == nil && isManagedCodexCommand(existingCommand, adapterPath, binaryPath) {
+				if managedHandlerFound {
+					return nil, errors.New("refusing to rewrite duplicate managed Pith PreToolUse handlers in Codex hooks.json")
+				}
+				managedHandlerFound = true
+				groupHasManagedHandler = true
+				handler["type"], err = json.Marshal("command")
+				if err != nil {
+					return nil, err
+				}
+				handler["command"], err = json.Marshal(command)
+				if err != nil {
+					return nil, err
+				}
+				handler["statusMessage"], err = json.Marshal(codexHookStatusMessage)
+				if err != nil {
+					return nil, err
+				}
+				updatedHandler, err := marshalRawObject(handler)
+				if err != nil {
+					return nil, err
+				}
+				filtered = append(filtered, updatedHandler)
 				continue
 			}
 			filtered = append(filtered, rawHandler)
 		}
-		if len(filtered) == len(handlers) {
+		if !groupHasManagedHandler {
 			updatedGroups = append(updatedGroups, rawGroup)
 			continue
-		}
-		if len(filtered) == 0 {
-			if len(group) == 2 {
-				if _, hasMatcher := group["matcher"]; hasMatcher {
-					if _, hasHooks := group["hooks"]; hasHooks {
-						continue
-					}
-				}
-			}
 		}
 		group["hooks"], err = json.Marshal(filtered)
 		if err != nil {
@@ -593,14 +636,16 @@ func withCodexPreToolUseHook(root map[string]json.RawMessage, command string) ([
 		}
 		updatedGroups = append(updatedGroups, updatedGroup)
 	}
-	newGroup, err := json.Marshal(map[string]any{
-		"matcher": "^Bash$",
-		"hooks":   []json.RawMessage{newHandler},
-	})
-	if err != nil {
-		return nil, err
+	if !managedHandlerFound {
+		newGroup, err := json.Marshal(map[string]any{
+			"matcher": "^Bash$",
+			"hooks":   []json.RawMessage{newHandler},
+		})
+		if err != nil {
+			return nil, err
+		}
+		updatedGroups = append(updatedGroups, newGroup)
 	}
-	updatedGroups = append(updatedGroups, newGroup)
 	hooks["PreToolUse"], err = json.Marshal(updatedGroups)
 	if err != nil {
 		return nil, err
@@ -614,6 +659,43 @@ func withCodexPreToolUseHook(root map[string]json.RawMessage, command string) ([
 		return nil, err
 	}
 	return append(result, '\n'), nil
+}
+
+func isManagedCodexCommand(command, adapterPath, binaryPath string) bool {
+	suffix := " -I -S " + quotePOSIX(adapterPath) + " --pith-binary " + quotePOSIX(binaryPath)
+	if !strings.HasSuffix(command, suffix) {
+		return false
+	}
+	interpreter := strings.TrimSuffix(command, suffix)
+	if interpreter == quotePOSIX("python3") {
+		return true // Recognize hooks written by the earlier pith --hooks release.
+	}
+	pythonPath, ok := unquotePOSIX(interpreter)
+	return ok && filepath.IsAbs(pythonPath)
+}
+
+func unquotePOSIX(value string) (string, bool) {
+	if len(value) < 2 || value[0] != '\'' {
+		return "", false
+	}
+	var result strings.Builder
+	for i := 1; i < len(value); {
+		if value[i] != '\'' {
+			result.WriteByte(value[i])
+			i++
+			continue
+		}
+		if i == len(value)-1 {
+			return result.String(), true
+		}
+		const escapedQuote = `'"'"'`
+		if !strings.HasPrefix(value[i:], escapedQuote) {
+			return "", false
+		}
+		result.WriteByte('\'')
+		i += len(escapedQuote)
+	}
+	return "", false
 }
 
 func cloneRawMap(input map[string]json.RawMessage) map[string]json.RawMessage {
