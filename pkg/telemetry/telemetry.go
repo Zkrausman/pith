@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -102,6 +103,11 @@ type Telemetry struct {
 	DB *sql.DB
 }
 
+// SourceCodexWrapperPrivate identifies aggregate-only records created by the
+// completed-output Codex wrapper. These local rows are excluded from JSONL
+// export and sync.
+const SourceCodexWrapperPrivate = "codex-wrapper-private"
+
 var sensitiveCommandValue = regexp.MustCompile(`(?i)((?:--?(?:api[-_]?key|token|secret|password)(?:=|\s+)|(?:api[-_]?key|token|secret|password)\s*=\s*|authorization:\s*bearer\s+))[^\s"']+`)
 
 func redactCommand(command string) string {
@@ -143,6 +149,104 @@ func NewTelemetryWithPath(dbPath string) (*Telemetry, error) {
 	}
 
 	return t, nil
+}
+
+// NewPrivateTelemetry opens a telemetry store only when both its directory and
+// existing database are private. It creates a missing final directory and
+// database with owner-only permissions and never changes existing permissions.
+func NewPrivateTelemetry(storagePath string) (*Telemetry, error) {
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("private telemetry permission checks are unsupported on Windows")
+	}
+	if strings.TrimSpace(storagePath) == "" {
+		return nil, fmt.Errorf("private telemetry storage path is empty")
+	}
+	absolute, err := filepath.Abs(storagePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve private telemetry storage path: %w", err)
+	}
+	if err := ensurePrivateDirectory(absolute); err != nil {
+		return nil, err
+	}
+	dbPath := filepath.Join(absolute, "pith.db")
+	createdDB, err := ensurePrivateFile(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if err := requirePrivateIfPresent(sidecar); err != nil {
+			if createdDB {
+				_ = os.Remove(dbPath)
+			}
+			return nil, err
+		}
+	}
+	tel, err := NewTelemetryWithPath(dbPath)
+	if err != nil {
+		if createdDB {
+			_ = os.Remove(dbPath)
+		}
+		return nil, err
+	}
+	return tel, nil
+}
+
+func ensurePrivateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		err = os.Mkdir(path, 0700)
+		if err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create private telemetry directory: %w", err)
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect private telemetry directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+		return fmt.Errorf("telemetry directory is not private")
+	}
+	return nil
+}
+
+// ensurePrivateFile returns true only when it created the file itself.
+func ensurePrivateFile(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+			return false, fmt.Errorf("telemetry file is not private")
+		}
+		return false, nil
+	}
+	if !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect private telemetry file: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return ensurePrivateFile(path)
+		}
+		return false, fmt.Errorf("create private telemetry file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return false, fmt.Errorf("close private telemetry file: %w", err)
+	}
+	return true, nil
+}
+
+func requirePrivateIfPresent(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect private telemetry file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+		return fmt.Errorf("telemetry file is not private")
+	}
+	return nil
 }
 
 func (t *Telemetry) init() error {
@@ -256,10 +360,21 @@ func (t *Telemetry) Record(rec ExecutionRecord) error {
 	if strings.TrimSpace(rec.Model) == "" {
 		rec.Model = "unknown"
 	}
-	query := `INSERT INTO executions (command, original_tokens, compressed_tokens, original_content, compressed_content, duration_ms, parser_used, is_passthrough, source, harness, model, input_cost_per_million, decision_reason)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
-	_, err := t.DB.Exec(query, rec.Command, rec.OriginalTokens, rec.CompressedTokens, rec.OriginalContent, rec.CompressedContent, rec.DurationMs, rec.ParserUsed, rec.IsPassthrough, rec.Source, rec.Harness, rec.Model, rec.InputCostPerMillion, rec.DecisionReason)
+	verb := "INSERT"
+	if rec.Source == SourceCodexWrapperPrivate {
+		// A timestamp/command/duration collision is harmless for aggregate
+		// telemetry. This is not an exactly-once guarantee.
+		verb = "INSERT OR IGNORE"
+	}
+	columns := "command, original_tokens, compressed_tokens, original_content, compressed_content, duration_ms, parser_used, is_passthrough, source, harness, model, input_cost_per_million, decision_reason"
+	values := "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+	args := []interface{}{rec.Command, rec.OriginalTokens, rec.CompressedTokens, rec.OriginalContent, rec.CompressedContent, rec.DurationMs, rec.ParserUsed, rec.IsPassthrough, rec.Source, rec.Harness, rec.Model, rec.InputCostPerMillion, rec.DecisionReason}
+	if !rec.Timestamp.IsZero() {
+		columns = "timestamp, " + columns
+		values = "?, " + values
+		args = append([]interface{}{rec.Timestamp.UTC()}, args...)
+	}
+	_, err := t.DB.Exec(verb+" INTO executions ("+columns+") VALUES ("+values+")", args...)
 	return err
 }
 
@@ -365,10 +480,17 @@ func CommandPreview(command string) string {
 	return string(runes[:maxRunes-1]) + "…"
 }
 
+func discoveryFamily(command, source string) (string, bool) {
+	if source == SourceCodexWrapperPrivate && command == "go test" {
+		return "go test", true
+	}
+	return CommandFamily(command)
+}
+
 // GetDiscoveryFamilies aggregates safe command-family labels for passthrough
 // executions. It leaves GetUnparsedCommands intact for API compatibility.
 func (t *Telemetry) GetDiscoveryFamilies(source string) ([]DiscoveryFamily, error) {
-	query := "SELECT command, original_tokens, COALESCE(harness, 'unknown') FROM executions WHERE is_passthrough = 1"
+	query := "SELECT command, original_tokens, COALESCE(harness, 'unknown'), COALESCE(source, 'unknown') FROM executions WHERE is_passthrough = 1"
 	var args []interface{}
 	if source != "" && source != "all" {
 		query += " AND source = ?"
@@ -382,12 +504,12 @@ func (t *Telemetry) GetDiscoveryFamilies(source string) ([]DiscoveryFamily, erro
 
 	families := make(map[string]*DiscoveryFamily)
 	for rows.Next() {
-		var command, harness string
+		var command, harness, recordSource string
 		var tokens int
-		if err := rows.Scan(&command, &tokens, &harness); err != nil {
+		if err := rows.Scan(&command, &tokens, &harness, &recordSource); err != nil {
 			return nil, err
 		}
-		family, include := CommandFamily(command)
+		family, include := discoveryFamily(command, recordSource)
 		if !include {
 			continue
 		}
@@ -422,7 +544,7 @@ func (t *Telemetry) GetDiscoveryDetails(family, source string, limit int) ([]Dis
 	if limit <= 0 {
 		limit = 10
 	}
-	query := "SELECT timestamp, command, original_tokens, COALESCE(harness, 'unknown') FROM executions WHERE is_passthrough = 1"
+	query := "SELECT timestamp, command, original_tokens, COALESCE(harness, 'unknown'), COALESCE(source, 'unknown') FROM executions WHERE is_passthrough = 1"
 	var args []interface{}
 	if source != "" && source != "all" {
 		query += " AND source = ?"
@@ -437,10 +559,11 @@ func (t *Telemetry) GetDiscoveryDetails(family, source string, limit int) ([]Dis
 	var results []DiscoveryDetail
 	for rows.Next() && len(results) < limit {
 		var detail DiscoveryDetail
-		if err := rows.Scan(&detail.Timestamp, &detail.Command, &detail.OriginalTokens, &detail.Harness); err != nil {
+		var recordSource string
+		if err := rows.Scan(&detail.Timestamp, &detail.Command, &detail.OriginalTokens, &detail.Harness, &recordSource); err != nil {
 			return nil, err
 		}
-		candidate, include := CommandFamily(detail.Command)
+		candidate, include := discoveryFamily(detail.Command, recordSource)
 		if include && candidate == family {
 			detail.Command = CommandPreview(detail.Command)
 			results = append(results, detail)
@@ -800,9 +923,10 @@ func (t *Telemetry) ExportJSONL(w io.Writer) error {
 	query := `
 	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
+	WHERE COALESCE(source, 'unknown') != ?
 	ORDER BY id ASC`
 
-	rows, err := t.DB.Query(query)
+	rows, err := t.DB.Query(query, SourceCodexWrapperPrivate)
 	if err != nil {
 		return err
 	}
@@ -881,10 +1005,10 @@ func (t *Telemetry) ExportJSONLSince(w io.Writer, sinceID int64) error {
 	query := `
 	SELECT id, timestamp, command, original_tokens, compressed_tokens, COALESCE(original_content,''), COALESCE(compressed_content,''), duration_ms, COALESCE(parser_used,''), COALESCE(is_passthrough,0), COALESCE(source,'unknown'), COALESCE(harness,'unknown'), COALESCE(model,'unknown'), input_cost_per_million, COALESCE(decision_reason,'unknown')
 	FROM executions
-	WHERE id > ?
+	WHERE id > ? AND COALESCE(source, 'unknown') != ?
 	ORDER BY id ASC`
 
-	rows, err := t.DB.Query(query, sinceID)
+	rows, err := t.DB.Query(query, sinceID, SourceCodexWrapperPrivate)
 	if err != nil {
 		return err
 	}

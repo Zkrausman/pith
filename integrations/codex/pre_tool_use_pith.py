@@ -22,6 +22,10 @@ READ_CHUNK = 32 << 10
 BUFFER_SECONDS = 2.0
 TRANSFORM_OUTPUT_LIMIT = 1 << 20
 HOOK_INPUT_LIMIT = 64 << 10
+RECORD_TIMEOUT_SECONDS = 0.15
+RECORD_MAX_RUNES = 1 << 20
+RECORD_MAX_DURATION_MS = 24 * 60 * 60 * 1000
+RECORD_MAX_REQUEST = 2048
 _CANCEL_SIGNALS = {signal.SIGINT, signal.SIGTERM}
 _CANCEL_SIGNAL: int | None = None
 _SUMMARY_OK = re.compile(r"ok\s+\S+\s+\d+(?:\.\d+)?s\Z")
@@ -195,6 +199,69 @@ def _selected_output(raw: bytes, response_bytes: bytes) -> bytes | None:
     if not encoded or len(encoded) >= len(raw):
         return None
     return encoded
+
+
+def _record_wrapper_outcome(
+    pith_binary: str, original: bytes, delivered: bytes, duration_ms: int,
+    outcome: str, *, timeout: float = RECORD_TIMEOUT_SECONDS,
+) -> None:
+    """Best-effort aggregate accounting after stdout publication; never retain text."""
+    if outcome not in ("transformed", "raw_fallback") or duration_ms < 0 or duration_ms > RECORD_MAX_DURATION_MS:
+        return
+    try:
+        original_text = original.decode("utf-8", errors="strict")
+        delivered_text = delivered.decode("utf-8", errors="strict")
+        original_runes = len(original_text)
+        delivered_runes = len(delivered_text)
+        if original_runes > RECORD_MAX_RUNES or delivered_runes > RECORD_MAX_RUNES:
+            return
+        if outcome == "raw_fallback" and original_runes != delivered_runes:
+            return
+        if outcome == "transformed" and delivered_runes > original_runes:
+            return
+        request = json.dumps(
+            {"originalRunes": original_runes, "deliveredRunes": delivered_runes,
+             "durationMs": duration_ms, "outcome": outcome},
+            separators=(",", ":"), allow_nan=False,
+        ).encode("ascii")
+        if len(request) > RECORD_MAX_REQUEST or not os.path.isabs(pith_binary):
+            return
+        deadline = time.monotonic() + max(0.001, timeout)
+        prior_handlers = {signum: signal.signal(signum, signal.SIG_IGN) for signum in _CANCEL_SIGNALS}
+        try:
+            process = subprocess.Popen(
+                [pith_binary, "_record-codex-wrapper"], stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+            )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.communicate(timeout=0.05)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                return
+            try:
+                process.communicate(request, timeout=remaining)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.communicate(timeout=0.05)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return
+        finally:
+            for signum, handler in prior_handlers.items():
+                signal.signal(signum, handler)
+    except (UnicodeDecodeError, UnicodeEncodeError, OSError, ValueError, RecursionError):
+        return
 
 
 def _pending_cancel() -> bool:
@@ -533,6 +600,7 @@ def run_native(
     capture_limit: int = CAPTURE_LIMIT, buffer_seconds: float = BUFFER_SECONDS,
     stdout_fd: int = 1, writer: Callable[[int, bytes], bool] = _write_all,
     warning_writer: Callable[[str, int | None], None] = _stderr_delivery_warning,
+    record_outcome: Callable[[str, bytes, bytes, int, str], None] | None = None,
 ) -> int:
     """Run the already-authorized native command once; transform eligible stdout."""
     global _CANCEL_SIGNAL
@@ -568,6 +636,7 @@ def run_native(
         return _exec_after_setup_failure(argv, previous)
 
     deadline = time.monotonic() + buffer_seconds
+    native_started_ns = time.monotonic_ns()
     proc, released, canceled_before_release, spawn_failed = _spawn_gated(
         argv, stdin=None, stdout=write_fd, stderr=None,
     )
@@ -586,6 +655,9 @@ def run_native(
     read_failure = False
     read_errors = 0
     native_status: int | None = None
+    native_duration_ms = 0
+    published_stdout: bytes | None = None
+    published_outcome = "raw_fallback"
     try:
         while not eof or proc.poll() is None:
             remaining = deadline - time.monotonic()
@@ -652,6 +724,7 @@ def run_native(
             if delivery_ok and not writer(stdout_fd, chunk):
                 delivery_ok = False
         native_status = proc.poll()
+        native_duration_ms = max(0, (time.monotonic_ns() - native_started_ns) // 1_000_000)
         if eligible and native_status == 0 and _CANCEL_SIGNAL is None and delivery_ok:
             transformed = _run_transform(
                 pith_binary, shlex.join(list(argv)), bytes(captured), deadline,
@@ -663,10 +736,14 @@ def run_native(
                 else None
             )
             if selected is not None:
+                published_stdout = selected
+                published_outcome = "transformed"
                 delivery_ok = writer(stdout_fd, selected)
             elif delivery_ok:
+                published_stdout = bytes(captured)
                 delivery_ok = writer(stdout_fd, bytes(captured))
         elif eligible and delivery_ok:
+            published_stdout = bytes(captured)
             delivery_ok = writer(stdout_fd, bytes(captured))
 
         if not delivery_ok:
@@ -686,6 +763,27 @@ def run_native(
         _reraise(_CANCEL_SIGNAL)
     if native_status is not None and native_status < 0:
         _reraise(-native_status)
+    if eligible and delivery_ok and published_stdout is not None and native_status is not None:
+        try:
+            original_text = bytes(captured).decode("utf-8", errors="strict")
+            delivered_text = published_stdout.decode("utf-8", errors="strict")
+            original_runes, delivered_runes = len(original_text), len(delivered_text)
+            known_counts = (
+                original_runes <= RECORD_MAX_RUNES and delivered_runes <= RECORD_MAX_RUNES and
+                native_duration_ms <= RECORD_MAX_DURATION_MS and
+                ((published_outcome == "raw_fallback" and original_runes == delivered_runes) or
+                 (published_outcome == "transformed" and delivered_runes <= original_runes))
+            )
+            if known_counts:
+                recorder = record_outcome or _record_wrapper_outcome
+                try:
+                    recorder(pith_binary, bytes(captured), published_stdout, native_duration_ms, published_outcome)
+                except Exception:
+                    # Telemetry is post-publication best effort and cannot change
+                    # the already completed native command result.
+                    pass
+        except (UnicodeDecodeError, OverflowError):
+            pass
     return 125 if native_status is None else native_status
 
 

@@ -4,6 +4,18 @@ This package manages the recording and retrieval of command execution statistics
 
 ## Decision accounting and privacy
 
+The Codex completed-output wrapper can submit only bounded rune counts,
+duration, and a fixed outcome after stdout is fully published. Pith stores the
+counts using the existing rune-per-four token estimate and fixed `go test`
+family label. It stores no command arguments, paths, model, price, or output.
+These `codex-wrapper-private` records are eligible for local gain and discovery
+and are excluded by both JSONL exporters, including network sync. New storage
+uses owner-only permissions; an existing store is reused only when its
+directory and database already have private permissions. No permissions are
+changed. Recorder failures do not affect the native command result. This
+coverage omits streamed, incomplete, direct-exec, and unknown-count outcomes.
+Gain's dollar figures continue to use the existing estimated pricing.
+
 `ExecutionRecord.DecisionReason` is stored in the additive SQLite `decision_reason`
 column (`TEXT NOT NULL DEFAULT 'unknown'`) and exported under JSON name
 `decision_reason`. Its only values are:

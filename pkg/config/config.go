@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -54,6 +55,34 @@ func LoadConfig() (*Config, error) {
 // fail closed rather than enabling parsers disabled by legacy settings.
 func LoadConfigWithLegacyFallback() (*Config, error) {
 	return loadConfig(true)
+}
+
+// LoadConfigWithLegacyFallbackStrict validates the selected configuration file
+// before returning the same read-only, legacy-aware settings used by hooks.
+// Ordinary config loading keeps its historical malformed-file fallback.
+func LoadConfigWithLegacyFallbackStrict() (*Config, error) {
+	path, err := GetConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return nil, homeErr
+		}
+		data, err = os.ReadFile(filepath.Join(home, ".pith", "config.json"))
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err == nil {
+		var validated Config
+		if err := json.Unmarshal(data, &validated); err != nil {
+			return nil, fmt.Errorf("invalid Pith configuration")
+		}
+	}
+	return LoadConfigWithLegacyFallback()
 }
 
 func loadConfig(legacyFallback bool) (*Config, error) {

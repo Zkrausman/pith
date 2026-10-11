@@ -133,7 +133,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
     def _invocations(self):
         return len(self.go_counter.read_text(encoding="ascii").splitlines()) if self.go_counter.exists() else 0
 
-    def _run(self, *, writer_result=True, **kwargs):
+    def _run(self, *, writer_result=True, record_outcome=None, **kwargs):
         packets = bytearray()
         writes = []
         warnings = []
@@ -151,6 +151,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
                 self.pith_binary,
                 stdout_fd=123, writer=writer,
                 warning_writer=lambda message, native: warnings.append((message, native)),
+                record_outcome=record_outcome or (lambda *_args: None),
                 **kwargs,
             )
         return status, bytes(packets), writes, warnings
@@ -597,6 +598,87 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         self.assertEqual(len(writes), 1)
         self.assertEqual(warnings, [("stdout publication incomplete", 0)])
         self.assertEqual(self._invocations(), 1)
+
+    def test_wrapper_telemetry_submits_once_after_transform_or_complete_raw_fallback(self):
+        records = []
+        status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+        self.assertEqual((status, output), (0, SELECTED))
+        self.assertEqual(len(records), 1)
+        binary, original, delivered, duration_ms, outcome = records[0]
+        self.assertEqual(binary, self.pith_binary)
+        self.assertEqual((original, delivered, outcome), (VALID, SELECTED, "transformed"))
+        self.assertGreaterEqual(duration_ms, 0)
+
+        records.clear()
+        env = self._env(FAKE_PITH_MODE="wrong_parser")
+        with mock.patch.dict(os.environ, env, clear=True):
+            status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+        self.assertEqual((status, output), (0, VALID))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][1:3], (VALID, VALID))
+        self.assertEqual(records[0][-1], "raw_fallback")
+
+        records.clear()
+        env = self._env(FAKE_GO_STATUS="7")
+        with mock.patch.dict(os.environ, env, clear=True):
+            status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+        self.assertEqual((status, output), (7, VALID))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][1:3], (VALID, VALID))
+        self.assertEqual(records[0][-1], "raw_fallback")
+
+    def test_recorder_failure_and_cancellation_do_not_change_published_native_result(self):
+        def fail_recorder(*_args):
+            raise OSError("fixture telemetry failure")
+
+        status, output, _, _ = self._run(record_outcome=fail_recorder)
+        self.assertEqual((status, output), (0, SELECTED))
+
+        def cancel_recorder(*_args):
+            pith_adapter._CANCEL_SIGNAL = signal.SIGTERM
+
+        status, output, _, _ = self._run(record_outcome=cancel_recorder)
+        self.assertEqual((status, output), (0, SELECTED))
+
+    def test_incomplete_or_unknown_stdout_is_omitted_from_wrapper_telemetry(self):
+        records = []
+        env = self._env(FAKE_GO_MODE="invalid_utf8")
+        with mock.patch.dict(os.environ, env, clear=True):
+            status, output, _, _ = self._run(record_outcome=lambda *args: records.append(args))
+        self.assertEqual((status, output), (0, b"\xff"))
+        self.assertEqual(records, [])
+
+        env = self._env(FAKE_GO_MODE="silent")
+        with mock.patch.dict(os.environ, env, clear=True):
+            status, output, _, _ = self._run(
+                buffer_seconds=0.03, record_outcome=lambda *args: records.append(args),
+            )
+        self.assertEqual((status, output), (0, VALID))
+        self.assertEqual(records, [])
+
+    def test_record_helper_bounds_payload_and_reaps_timed_out_attempt_once(self):
+        process = mock.Mock()
+        process.communicate.side_effect = [subprocess.TimeoutExpired("pith", 0.01), b""]
+        process.returncode = -9
+        with mock.patch.object(pith_adapter.subprocess, "Popen", return_value=process) as popen:
+            pith_adapter._record_wrapper_outcome(
+                self.pith_binary, "🙂abc".encode(), "🙂".encode(), 15, "transformed", timeout=0.01,
+            )
+        popen.assert_called_once()
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], [self.pith_binary, "_record-codex-wrapper"])
+        self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+        self.assertEqual(json.loads(process.communicate.call_args_list[0].args[0]), {
+            "originalRunes": 4, "deliveredRunes": 1, "durationMs": 15, "outcome": "transformed",
+        })
+        process.kill.assert_called_once()
+
+        with mock.patch.object(pith_adapter.subprocess, "Popen") as popen:
+            pith_adapter._record_wrapper_outcome(
+                self.pith_binary, b"x" * (pith_adapter.CAPTURE_LIMIT + 1), b"", 1, "raw_fallback",
+            )
+        popen.assert_not_called()
 
     def test_partial_writes_eintr_limits_and_static_no_group_forwarding(self):
         result = bytearray()
