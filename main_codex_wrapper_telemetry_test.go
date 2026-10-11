@@ -75,6 +75,12 @@ func TestCodexWrapperRecorderRejectsMalformedRequestsBeforeStorage(t *testing.T)
 	for _, request := range []string{
 		`{"originalRunes":1,"deliveredRunes":1,"durationMs":0,"outcome":"raw_fallback","extra":true}`,
 		`{"originalRunes":1,"deliveredRunes":1,"durationMs":0,"outcome":"raw_fallback"} {}`,
+		`{"deliveredRunes":1,"durationMs":0,"outcome":"raw_fallback"}`,
+		`{"originalRunes":null,"deliveredRunes":1,"durationMs":0,"outcome":"raw_fallback"}`,
+		`{"originalRunes":1,"durationMs":0,"outcome":"raw_fallback"}`,
+		`{"originalRunes":1,"deliveredRunes":null,"durationMs":0,"outcome":"raw_fallback"}`,
+		`{"originalRunes":1,"deliveredRunes":1,"outcome":"raw_fallback"}`,
+		`{"originalRunes":1,"deliveredRunes":1,"durationMs":null,"outcome":"raw_fallback"}`,
 		`{"originalRunes":-1,"deliveredRunes":-1,"durationMs":0,"outcome":"raw_fallback"}`,
 		`{"originalRunes":1,"deliveredRunes":0,"durationMs":0,"outcome":"raw_fallback"}`,
 		`{"originalRunes":1,"deliveredRunes":2,"durationMs":0,"outcome":"transformed"}`,
@@ -87,6 +93,29 @@ func TestCodexWrapperRecorderRejectsMalformedRequestsBeforeStorage(t *testing.T)
 	}
 	if _, err := os.Stat(storage); !os.IsNotExist(err) {
 		t.Fatalf("invalid requests created telemetry storage: %v", err)
+	}
+}
+
+func TestCodexWrapperRecorderAcceptsExplicitZeroCounts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("owner-only telemetry permission checks are Unix-specific")
+	}
+	storage := filepath.Join(t.TempDir(), "private")
+	setWrapperRecorderEnvironment(t, storage)
+	if err := runWrapperRecorderForTest(t, `{"originalRunes":0,"deliveredRunes":0,"durationMs":0,"outcome":"raw_fallback"}`); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := telemetry.NewTelemetryWithPath(filepath.Join(storage, "pith.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tel.Close()
+	records, err := tel.GetRecentExecutions(1, telemetry.SourceCodexWrapperPrivate)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("recorded zero-count rows: %#v, %v", records, err)
+	}
+	if records[0].OriginalTokens != 0 || records[0].CompressedTokens != 0 || records[0].DurationMs != 0 || !records[0].IsPassthrough {
+		t.Fatalf("unexpected zero-count aggregate: %#v", records[0])
 	}
 }
 

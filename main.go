@@ -56,9 +56,9 @@ const (
 )
 
 type codexWrapperRecordRequest struct {
-	OriginalRunes  int    `json:"originalRunes"`
-	DeliveredRunes int    `json:"deliveredRunes"`
-	DurationMs     int64  `json:"durationMs"`
+	OriginalRunes  *int   `json:"originalRunes"`
+	DeliveredRunes *int   `json:"deliveredRunes"`
+	DurationMs     *int64 `json:"durationMs"`
 	Outcome        string `json:"outcome"`
 }
 
@@ -379,9 +379,15 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return fmt.Errorf("wrapper telemetry request has trailing data")
 	}
-	if request.OriginalRunes < 0 || request.OriginalRunes > codexWrapperRecordMaxRunes ||
-		request.DeliveredRunes < 0 || request.DeliveredRunes > codexWrapperRecordMaxRunes ||
-		request.DurationMs < 0 || request.DurationMs > codexWrapperRecordMaxDuration {
+	if request.OriginalRunes == nil || request.DeliveredRunes == nil || request.DurationMs == nil {
+		return fmt.Errorf("wrapper telemetry counts are required")
+	}
+	originalRunes := *request.OriginalRunes
+	deliveredRunes := *request.DeliveredRunes
+	durationMs := *request.DurationMs
+	if originalRunes < 0 || originalRunes > codexWrapperRecordMaxRunes ||
+		deliveredRunes < 0 || deliveredRunes > codexWrapperRecordMaxRunes ||
+		durationMs < 0 || durationMs > codexWrapperRecordMaxDuration {
 		return fmt.Errorf("wrapper telemetry counts are out of range")
 	}
 	decision := telemetry.DecisionUnknown
@@ -389,12 +395,12 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	parserName := "tests"
 	switch request.Outcome {
 	case "transformed":
-		if request.DeliveredRunes > request.OriginalRunes {
+		if deliveredRunes > originalRunes {
 			return fmt.Errorf("transformed wrapper output exceeds original")
 		}
 		decision = telemetry.DecisionTransformed
 	case "raw_fallback":
-		if request.DeliveredRunes != request.OriginalRunes {
+		if deliveredRunes != originalRunes {
 			return fmt.Errorf("raw fallback counts must match")
 		}
 		decision = telemetry.DecisionProtectedPassthrough
@@ -418,9 +424,9 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	return tel.Record(telemetry.ExecutionRecord{
 		Timestamp:        time.Now().UTC(),
 		Command:          "go test",
-		OriginalTokens:   runner.EstimateTokensFromRuneCount(request.OriginalRunes, 4),
-		CompressedTokens: runner.EstimateTokensFromRuneCount(request.DeliveredRunes, 4),
-		DurationMs:       request.DurationMs,
+		OriginalTokens:   runner.EstimateTokensFromRuneCount(originalRunes, 4),
+		CompressedTokens: runner.EstimateTokensFromRuneCount(deliveredRunes, 4),
+		DurationMs:       durationMs,
 		ParserUsed:       parserName,
 		IsPassthrough:    passthrough,
 		Source:           telemetry.SourceCodexWrapperPrivate,

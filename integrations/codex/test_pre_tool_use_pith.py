@@ -627,18 +627,30 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         self.assertEqual(records[0][1:3], (VALID, VALID))
         self.assertEqual(records[0][-1], "raw_fallback")
 
-    def test_recorder_failure_and_cancellation_do_not_change_published_native_result(self):
+    def test_recorder_failure_does_not_change_published_native_result(self):
         def fail_recorder(*_args):
             raise OSError("fixture telemetry failure")
 
         status, output, _, _ = self._run(record_outcome=fail_recorder)
         self.assertEqual((status, output), (0, SELECTED))
 
-        def cancel_recorder(*_args):
-            pith_adapter._CANCEL_SIGNAL = signal.SIGTERM
+    def test_signal_arriving_during_recorder_is_reraised_after_publication(self):
+        def signal_recorder(*_args):
+            os.kill(os.getpid(), signal.SIGTERM)
 
-        status, output, _, _ = self._run(record_outcome=cancel_recorder)
+        with mock.patch.object(pith_adapter, "_reraise") as reraise:
+            status, output, writes, _ = self._run(record_outcome=signal_recorder)
         self.assertEqual((status, output), (0, SELECTED))
+        self.assertEqual(writes, [SELECTED])
+        reraise.assert_called_once_with(signal.SIGTERM)
+
+        with mock.patch.dict(os.environ, {"FAKE_GO_STATUS": "7"}), mock.patch.object(
+            pith_adapter, "_reraise",
+        ) as reraise:
+            status, output, writes, _ = self._run(record_outcome=signal_recorder)
+        self.assertEqual((status, output), (7, VALID))
+        self.assertEqual(writes, [VALID])
+        reraise.assert_called_once_with(signal.SIGTERM)
 
     def test_incomplete_or_unknown_stdout_is_omitted_from_wrapper_telemetry(self):
         records = []

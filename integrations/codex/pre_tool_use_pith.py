@@ -227,40 +227,36 @@ def _record_wrapper_outcome(
         if len(request) > RECORD_MAX_REQUEST or not os.path.isabs(pith_binary):
             return
         deadline = time.monotonic() + max(0.001, timeout)
-        prior_handlers = {signum: signal.signal(signum, signal.SIG_IGN) for signum in _CANCEL_SIGNALS}
-        try:
-            process = subprocess.Popen(
-                [pith_binary, "_record-codex-wrapper"], stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
-            )
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                try:
-                    process.communicate(timeout=0.05)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-                return
+        process = subprocess.Popen(
+            [pith_binary, "_record-codex-wrapper"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             try:
-                process.communicate(request, timeout=remaining)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                try:
-                    process.communicate(timeout=0.05)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-        except (OSError, ValueError, subprocess.SubprocessError):
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.communicate(timeout=0.05)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             return
-        finally:
-            for signum, handler in prior_handlers.items():
-                signal.signal(signum, handler)
-    except (UnicodeDecodeError, UnicodeEncodeError, OSError, ValueError, RecursionError):
+        try:
+            process.communicate(request, timeout=remaining)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.communicate(timeout=0.05)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    except (
+        UnicodeDecodeError, UnicodeEncodeError, OSError, ValueError,
+        subprocess.SubprocessError, RecursionError,
+    ):
         return
 
 
@@ -776,12 +772,25 @@ def run_native(
             )
             if known_counts:
                 recorder = record_outcome or _record_wrapper_outcome
+                for signum in _CANCEL_SIGNALS:
+                    signal.signal(signum, note_cancel)
                 try:
                     recorder(pith_binary, bytes(captured), published_stdout, native_duration_ms, published_outcome)
                 except Exception:
                     # Telemetry is post-publication best effort and cannot change
                     # the already completed native command result.
                     pass
+                finally:
+                    # Keep cancellation latched while the bounded recorder is
+                    # running, then restore the caller's handlers atomically
+                    # with respect to pending signals.
+                    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _CANCEL_SIGNALS)
+                    cancel = _CANCEL_SIGNAL or _pending_cancel_signal()
+                    for signum, handler in previous.items():
+                        signal.signal(signum, handler)
+                    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+                if cancel is not None:
+                    _reraise(cancel)
         except (UnicodeDecodeError, OverflowError):
             pass
     return 125 if native_status is None else native_status
