@@ -94,6 +94,9 @@ if log:
     with open(log, 'w', encoding='utf-8') as f:
         json.dump(request, f)
 mode = os.environ.get('FAKE_PITH_MODE', 'success')
+delay = float(os.environ.get('FAKE_PITH_DELAY', '0'))
+if delay:
+    time.sleep(delay)
 if mode == 'sleep':
     time.sleep(5)
 elif mode == 'signal':
@@ -336,7 +339,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
             self.pith_log.unlink(missing_ok=True)
             env = self._env(FAKE_GO_MODE=mode, FAKE_GO_SLEEP="0.12")
             with mock.patch.dict(os.environ, env, clear=True):
-                status, output, _, _ = self._run(buffer_seconds=0.03)
+                status, output, _, _ = self._run(capture_seconds=0.03)
             self.assertEqual((status, output), (0, VALID), mode)
             self.assertFalse(self.pith_log.exists())
             expected_invocations += 1
@@ -475,12 +478,24 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         self.pith_started.unlink(missing_ok=True)
         start = time.monotonic()
         with mock.patch.dict(os.environ, env, clear=True):
-            status, output, _, _ = self._run(buffer_seconds=0.5)
+            status, output, _, _ = self._run(capture_seconds=5.0, transform_seconds=0.5)
         elapsed = time.monotonic() - start
         self.assertEqual((status, output), (0, VALID))
         self.assertLess(elapsed, 0.5 + 0.05 + 0.25)
         self.assertEqual(self.pith_started.read_text(encoding="ascii"), "started")
         self.assertEqual(self._invocations(), 3)
+
+    def test_transform_gets_its_own_window_after_native_capture(self):
+        env = self._env(FAKE_GO_MODE="silent", FAKE_GO_SLEEP="0.35", FAKE_PITH_DELAY="0.3")
+        start = time.monotonic()
+        with mock.patch.dict(os.environ, env, clear=True):
+            status, output, _, _ = self._run(capture_seconds=1.0, transform_seconds=0.5)
+        elapsed = time.monotonic() - start
+        self.assertEqual((status, output), (0, SELECTED))
+        self.assertGreater(elapsed, 0.5)
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(self._invocations(), 1)
+        self.assertTrue(self.pith_started.exists())
 
     def test_deadline_after_transform_preparation_publishes_raw_without_pith(self):
         real_poller = pith_adapter._new_pipe_poller
@@ -493,16 +508,16 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
             return real_poller(*fds)
 
         self.pith_started.unlink(missing_ok=True)
-        env = self._env()
+        env = self._env(FAKE_GO_MODE="silent", FAKE_GO_SLEEP="0.1")
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(pith_adapter, "_new_pipe_poller", side_effect=delay_transform_preparation),
         ):
             run_started = time.monotonic()
-            status, output, _, _ = self._run(buffer_seconds=0.5)
+            status, output, _, _ = self._run(capture_seconds=1.0, transform_seconds=0.5)
         self.assertEqual((status, output), (0, VALID))
         self.assertTrue(transform_prep_started)
-        self.assertLess(transform_prep_started[0] - run_started, 0.5)
+        self.assertGreater(transform_prep_started[0] - run_started, 0.08)
         self.assertFalse(self.pith_started.exists())
         self.assertFalse(self.pith_log.exists())
         self.assertEqual(self._invocations(), 1)
@@ -544,7 +559,7 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(pith_adapter, "_stop_reap", side_effect=reap_but_report_unknown),
         ):
-            status, output, _, warnings = self._run(buffer_seconds=0.5)
+            status, output, _, warnings = self._run(capture_seconds=5.0, transform_seconds=0.5)
         self.assertEqual((status, output), (0, VALID))
         self.assertEqual(self.pith_started.read_text(encoding="ascii"), "started")
         self.assertEqual(len(warnings), 1)
@@ -615,7 +630,8 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         self.assertEqual(bytes(result), b"abcdefgh")
         self.assertEqual(pith_adapter.CAPTURE_LIMIT, 1 << 20)
         self.assertEqual(pith_adapter.READ_CHUNK, 32 << 10)
-        self.assertEqual(pith_adapter.BUFFER_SECONDS, 2.0)
+        self.assertEqual(pith_adapter.CAPTURE_SECONDS, 30.0)
+        self.assertEqual(pith_adapter.TRANSFORM_SECONDS, 2.0)
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("start_new_session", source)
         self.assertNotIn("os.setsid", source)

@@ -46,7 +46,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.2.0"
+const version = "v3.2.1"
 
 type HookInput struct {
 	ToolResponse struct {

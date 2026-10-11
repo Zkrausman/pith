@@ -19,7 +19,8 @@ from typing import Callable, Sequence
 
 CAPTURE_LIMIT = 1 << 20
 READ_CHUNK = 32 << 10
-BUFFER_SECONDS = 2.0
+CAPTURE_SECONDS = 30.0
+TRANSFORM_SECONDS = 2.0
 TRANSFORM_OUTPUT_LIMIT = 1 << 20
 HOOK_INPUT_LIMIT = 64 << 10
 _CANCEL_SIGNALS = {signal.SIGINT, signal.SIGTERM}
@@ -530,7 +531,8 @@ def _exec_after_setup_failure(argv: Sequence[str], previous: dict[int, object]) 
 
 def run_native(
     argv: Sequence[str], pith_binary: str, *,
-    capture_limit: int = CAPTURE_LIMIT, buffer_seconds: float = BUFFER_SECONDS,
+    capture_limit: int = CAPTURE_LIMIT, capture_seconds: float = CAPTURE_SECONDS,
+    transform_seconds: float = TRANSFORM_SECONDS,
     stdout_fd: int = 1, writer: Callable[[int, bytes], bool] = _write_all,
     warning_writer: Callable[[str, int | None], None] = _stderr_delivery_warning,
 ) -> int:
@@ -567,7 +569,7 @@ def run_native(
                     pass
         return _exec_after_setup_failure(argv, previous)
 
-    deadline = time.monotonic() + buffer_seconds
+    capture_deadline = time.monotonic() + capture_seconds
     proc, released, canceled_before_release, spawn_failed = _spawn_gated(
         argv, stdin=None, stdout=write_fd, stderr=None,
     )
@@ -588,7 +590,7 @@ def run_native(
     native_status: int | None = None
     try:
         while not eof or proc.poll() is None:
-            remaining = deadline - time.monotonic()
+            remaining = capture_deadline - time.monotonic()
             if eligible and (remaining <= 0 or _CANCEL_SIGNAL is not None):
                 eligible = False
                 if captured and not writer(stdout_fd, bytes(captured)):
@@ -653,13 +655,14 @@ def run_native(
                 delivery_ok = False
         native_status = proc.poll()
         if eligible and native_status == 0 and _CANCEL_SIGNAL is None and delivery_ok:
+            transform_deadline = time.monotonic() + transform_seconds
             transformed = _run_transform(
-                pith_binary, shlex.join(list(argv)), bytes(captured), deadline,
+                pith_binary, shlex.join(list(argv)), bytes(captured), transform_deadline,
                 native_status=native_status, warning_writer=warning_writer,
             )
             selected = (
                 _selected_output(bytes(captured), transformed)
-                if transformed is not None and _CANCEL_SIGNAL is None and time.monotonic() < deadline
+                if transformed is not None and _CANCEL_SIGNAL is None and time.monotonic() < transform_deadline
                 else None
             )
             if selected is not None:
