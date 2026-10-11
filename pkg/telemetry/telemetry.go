@@ -100,13 +100,74 @@ func normalizeHarness(h string) string {
 }
 
 type Telemetry struct {
-	DB *sql.DB
+	DB      *sql.DB
+	private bool
 }
 
 // SourceCodexWrapperPrivate identifies aggregate-only records created by the
 // completed-output Codex wrapper. These local rows are excluded from JSONL
 // export and sync.
 const SourceCodexWrapperPrivate = "codex-wrapper-private"
+
+// Codex wrapper observations are local-only, aggregate measurements. Their
+// bounded row count and age apply only to this table, never executions.
+const (
+	CodexObservationMaxRows       = 5000
+	CodexObservationRetentionDays = 90
+	CodexObservationMaxElapsedMs int64 = 24 * 60 * 60 * 1000
+	CodexObservationMaxBytes     int64 = 1 << 40
+)
+
+const (
+	CodexCaptureComplete   = "complete_within_window"
+	CodexCaptureDeadline   = "deadline_stream"
+	CodexCaptureCap        = "cap_stream"
+	CodexCaptureIncomplete = "incomplete"
+
+	CodexSelectionReduced = "reduced"
+	CodexSelectionRaw     = "raw"
+	CodexSelectionUnknown = "unknown"
+
+	CodexFamilyOtherCompound = "other/compound"
+)
+
+var codexObservationFamilies = map[string]struct{}{
+	"git status": {}, "git diff": {}, "git log": {}, "git show": {}, "git branch": {},
+	"go test": {}, "go build": {}, "go run": {}, "go vet": {},
+	"npm test": {}, "npm run": {}, "npm install": {}, "npm ci": {},
+	"pnpm test": {}, "pnpm run": {}, "pnpm install": {},
+	"yarn test": {}, "yarn run": {}, "yarn install": {},
+	"bun test": {}, "bun run": {}, "bun install": {},
+	"python": {}, "pytest": {}, "node": {}, "npx": {}, "cargo": {}, "rustc": {},
+	"make": {}, "cmake": {}, "docker": {}, "kubectl": {}, "terraform": {},
+	"rg": {}, "grep": {}, "find": {}, "ls": {}, "cat": {}, CodexFamilyOtherCompound: {},
+}
+
+// CodexCaptureObservation contains only closed-set labels and numeric
+// measurements. Nil pointers represent unknown values; zero represents a
+// verified empty measurement.
+type CodexCaptureObservation struct {
+	Outcome        string
+	ElapsedMs      *int64 // Native command wall-clock time from start to observed exit.
+	Selection      string
+	OriginalBytes  *int64
+	DeliveredBytes *int64
+}
+
+// CodexObservationSummary is a small local summary of retained wrapper
+// observations. It is deliberately independent from execution gain totals.
+type CodexObservationSummary struct {
+	ProposalCounts     map[string]int
+	CaptureOutcomes    map[string]int
+	SelectionCounts    map[string]int
+	CaptureRecords     int
+	ElapsedKnown       int
+	ElapsedUnknown     int
+	ByteCountsKnown    int
+	ByteCountsUnknown  int
+	SlowReductionCount int
+	SlowReductionBytes int64
+}
 
 var sensitiveCommandValue = regexp.MustCompile(`(?i)((?:--?(?:api[-_]?key|token|secret|password)(?:=|\s+)|(?:api[-_]?key|token|secret|password)\s*=\s*|authorization:\s*bearer\s+))[^\s"']+`)
 
@@ -188,6 +249,7 @@ func NewPrivateTelemetry(storagePath string) (*Telemetry, error) {
 		}
 		return nil, err
 	}
+	tel.private = true
 	return tel, nil
 }
 
@@ -272,6 +334,43 @@ func (t *Telemetry) init() error {
 	_, err := t.DB.Exec(query)
 	if err != nil {
 		return err
+	}
+
+	_, err = t.DB.Exec(`
+	CREATE TABLE IF NOT EXISTS codex_wrapper_observations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		kind TEXT NOT NULL CHECK (kind IN ('proposal', 'capture')),
+		family TEXT CHECK (family IS NULL OR family IN (
+			'git status', 'git diff', 'git log', 'git show', 'git branch',
+			'go test', 'go build', 'go run', 'go vet',
+			'npm test', 'npm run', 'npm install', 'npm ci',
+			'pnpm test', 'pnpm run', 'pnpm install',
+			'yarn test', 'yarn run', 'yarn install',
+			'bun test', 'bun run', 'bun install',
+			'python', 'pytest', 'node', 'npx', 'cargo', 'rustc',
+			'make', 'cmake', 'docker', 'kubectl', 'terraform',
+			'rg', 'grep', 'find', 'ls', 'cat', 'other/compound'
+		)),
+		capture_outcome TEXT CHECK (capture_outcome IS NULL OR capture_outcome IN (
+			'complete_within_window', 'deadline_stream', 'cap_stream', 'incomplete'
+		)),
+		elapsed_ms INTEGER CHECK (elapsed_ms IS NULL OR elapsed_ms BETWEEN 0 AND 86400000),
+		selection TEXT CHECK (selection IS NULL OR selection IN ('reduced', 'raw', 'unknown')),
+		original_bytes INTEGER CHECK (original_bytes IS NULL OR original_bytes BETWEEN 0 AND 1099511627776),
+		delivered_bytes INTEGER CHECK (delivered_bytes IS NULL OR delivered_bytes BETWEEN 0 AND 1099511627776),
+		CHECK (
+			(kind = 'proposal' AND family IS NOT NULL AND capture_outcome IS NULL AND elapsed_ms IS NULL AND selection IS NULL AND original_bytes IS NULL AND delivered_bytes IS NULL)
+			OR
+			(kind = 'capture' AND family IS NULL AND capture_outcome IS NOT NULL AND selection IS NOT NULL AND
+			 ((original_bytes IS NULL AND delivered_bytes IS NULL) OR (original_bytes IS NOT NULL AND delivered_bytes IS NOT NULL)))
+		)
+	);`)
+	if err != nil {
+		return fmt.Errorf("create Codex wrapper observation table: %w", err)
+	}
+	if _, err := t.DB.Exec("CREATE INDEX IF NOT EXISTS idx_codex_wrapper_observations_timestamp ON codex_wrapper_observations(timestamp)"); err != nil {
+		return fmt.Errorf("index Codex wrapper observations: %w", err)
 	}
 
 	// Add only the bounded metadata column. Legacy decisions stay unknown;
@@ -712,13 +811,33 @@ func (t *Telemetry) GetSavingsByModel() ([]ModelSavings, error) {
 }
 
 func (t *Telemetry) ResetAll() error {
-	_, err := t.DB.Exec("DELETE FROM executions")
-	return err
+	tx, err := t.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM executions"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM codex_wrapper_observations"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (t *Telemetry) ResetPassthrough() error {
-	_, err := t.DB.Exec("DELETE FROM executions WHERE is_passthrough = 1")
-	return err
+	tx, err := t.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM executions WHERE is_passthrough = 1"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM codex_wrapper_observations"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (t *Telemetry) GetRecentExecutions(limit int, source string) ([]ExecutionRecord, error) {
@@ -967,12 +1086,19 @@ func (t *Telemetry) ImportJSONL(r io.Reader) error {
 	defer stmt.Close()
 
 	for {
-		var rec ExecutionRecord
-		if err := decoder.Decode(&rec); err == io.EOF {
+		var imported struct {
+			ExecutionRecord
+			Kind string `json:"kind"`
+		}
+		if err := decoder.Decode(&imported); err == io.EOF {
 			break
 		} else if err != nil {
 			return err
 		}
+		if imported.Kind == "proposal" || imported.Kind == "capture" {
+			continue
+		}
+		rec := imported.ExecutionRecord
 
 		rec.DecisionReason = NormalizeDecisionReason(rec.DecisionReason)
 		rec.OriginalContent, rec.CompressedContent = "", ""

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,3 +168,102 @@ func TestCodexWrapperFallbackStoresEqualCounts(t *testing.T) {
 		t.Fatalf("fallback accounting: %s, %v", encoded, err)
 	}
 }
+
+func TestCodexWrapperProposalAndCaptureRequestsStoreOnlyPrivateObservations(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("owner-only telemetry permission checks are Unix-specific")
+	}
+	storage := filepath.Join(t.TempDir(), "private")
+	setWrapperRecorderEnvironment(t, storage)
+	for _, request := range []string{
+		`{"kind":"proposal","family":"git status"}`,
+		`{"kind":"proposal","family":"other/compound"}`,
+		`{"kind":"capture","captureOutcome":"complete_within_window","elapsedMs":0,"selection":"raw","originalBytes":0,"deliveredBytes":0}`,
+		`{"kind":"capture","captureOutcome":"incomplete","elapsedMs":null,"selection":"unknown","originalBytes":null,"deliveredBytes":null}`,
+	} {
+		if err := runWrapperRecorderForTest(t, request); err != nil {
+			t.Fatalf("record %s: %v", request, err)
+		}
+	}
+	tel, err := telemetry.NewTelemetryWithPath(filepath.Join(storage, "pith.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tel.Close()
+	summary, err := tel.GetCodexObservationSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ProposalCounts["git status"] != 1 || summary.ProposalCounts["other/compound"] != 1 ||
+		summary.CaptureRecords != 2 || summary.CaptureOutcomes[telemetry.CodexCaptureComplete] != 1 ||
+		summary.CaptureOutcomes[telemetry.CodexCaptureIncomplete] != 1 || summary.ElapsedKnown != 1 || summary.ElapsedUnknown != 1 ||
+		summary.ByteCountsKnown != 1 || summary.ByteCountsUnknown != 1 {
+		t.Fatalf("unexpected stored observations: %#v", summary)
+	}
+	var executions int
+	if err := tel.DB.QueryRow("SELECT COUNT(*) FROM executions").Scan(&executions); err != nil || executions != 0 {
+		t.Fatalf("observation calls created execution rows: %d err=%v", executions, err)
+	}
+}
+
+func TestCodexWrapperObservationRequestsRejectUnknownLabelsAndInconsistentUnknowns(t *testing.T) {
+	storage := filepath.Join(t.TempDir(), "must-not-exist")
+	setWrapperRecorderEnvironment(t, storage)
+	for _, request := range []string{
+		`{"kind":"proposal","family":"git status --token=sentinel-secret"}`,
+		`{"kind":"capture","captureOutcome":"incomplete","selection":"raw","originalBytes":0,"deliveredBytes":0}`,
+		`{"kind":"capture","captureOutcome":"complete_within_window","selection":"raw","originalBytes":0}`,
+		`{"kind":"capture","captureOutcome":"unknown","selection":"raw","originalBytes":0,"deliveredBytes":0}`,
+		`{"kind":"capture","captureOutcome":"complete_within_window","selection":"reduced","originalBytes":10,"deliveredBytes":10}`,
+	} {
+		if err := runWrapperRecorderForTest(t, request); err == nil {
+			t.Fatalf("request should be rejected: %s", request)
+		}
+	}
+	if _, err := os.Stat(storage); !os.IsNotExist(err) {
+		t.Fatalf("invalid observations created telemetry storage: %v", err)
+	}
+}
+
+func TestDiscoverIncludesPrivateCodexSummaryWithoutAddingGain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("owner-only telemetry permission checks are Unix-specific")
+	}
+	storage := filepath.Join(t.TempDir(), "private")
+	setWrapperRecorderEnvironment(t, storage)
+	tel, err := telemetry.NewPrivateTelemetry(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.RecordCodexProposedFamily("npm test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.RecordCodexCapture(telemetry.CodexCaptureObservation{
+		Outcome: telemetry.CodexCaptureComplete, ElapsedMs: int64Pointer(2401), Selection: telemetry.CodexSelectionReduced,
+		OriginalBytes: int64Pointer(500), DeliveredBytes: int64Pointer(200),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"discover"})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Private Codex Observations", "npm test", "complete_within_window",
+		"native elapsed ms known/unknown 1/0", "byte counts known/unknown 1/0",
+		"Recorded reductions after captures longer than 2 seconds: 1 captures, 300 bytes",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("discover output missing %q: %s", expected, output.String())
+		}
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
