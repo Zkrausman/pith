@@ -112,6 +112,18 @@ func (d *DependencyParser) Parse(output string) string {
 type TestParser struct{}
 
 func (t *TestParser) Name() string { return "tests" }
+
+// ParseGoVerboseSuccess applies TestParser to only a fully validated Go
+// verbose success profile and requires the established two-line result to
+// round-trip unchanged through this parser.
+func (t *TestParser) ParseGoVerboseSuccess(command, output string, exitCode int) (string, bool) {
+	summary, ok := ValidatedGoVerboseSuccess(command, output, exitCode)
+	if !ok || t.Parse(summary) != summary {
+		return "", false
+	}
+	return summary, true
+}
+
 func (t *TestParser) CanParse(cmd string, args []string) bool {
 	// Only match if it's a test command and doesn't have build-only or list-only flags
 	isTest := (MatchCommand(cmd, "npm") && len(args) > 0 && args[0] == "test") ||

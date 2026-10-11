@@ -47,7 +47,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.3.1"
+const version = "v3.3.2"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
