@@ -464,17 +464,25 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
                 raise OSError(5, "persistent fixture read failure")
             return real_read(fd, size)
 
-        env = self._env()
+        class SilentNativeProcess:
+            def poll(self):
+                return 0 if persistent_errors == 0 else None
+
+        process = SilentNativeProcess()
+
+        def spawn_silent_native(argv, *, stdin, stdout, stderr, launch_deadline=None):
+            return process, True, False, False
+
         with (
-            mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(pith_adapter, "_new_pipe_poller", side_effect=remember_poller_for_persistent),
             mock.patch.object(pith_adapter.os, "read", side_effect=fail_persistent_reads),
+            mock.patch.object(pith_adapter, "_spawn_gated", side_effect=spawn_silent_native),
         ):
             status, output, _, warnings = self._run()
         self.assertEqual((status, output), (0, b""))
         self.assertEqual(persistent_errors, 0)
         self.assertEqual(warnings, [("stdout capture read failed", 0)])
-        self.assertEqual(self._invocations(), 2)
+        self.assertEqual(self._invocations(), 1)
         self.assertFalse(self.pith_log.exists())
 
     def test_preparation_failure_after_latched_cancel_never_execs_native(self):
@@ -541,16 +549,56 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         self.assertEqual(self._invocations(), 3)
 
     def test_transform_gets_its_own_window_after_native_capture(self):
-        env = self._env(FAKE_GO_MODE="silent", FAKE_GO_SLEEP="0.35", FAKE_PITH_DELAY="0.3")
-        start = time.monotonic()
-        with mock.patch.dict(os.environ, env, clear=True):
-            status, output, _, _ = self._run(capture_seconds=1.0, transform_seconds=0.5)
-        elapsed = time.monotonic() - start
-        self.assertEqual((status, output), (0, SELECTED))
-        self.assertGreater(elapsed, 0.5)
-        self.assertLess(elapsed, 1.5)
-        self.assertEqual(self._invocations(), 1)
-        self.assertTrue(self.pith_started.exists())
+        clock = [0.0]
+        spawn_calls = []
+
+        class FakeNativeProcess:
+            def __init__(self):
+                self.poll_calls = 0
+                self.returncode = None
+
+            def poll(self):
+                self.poll_calls += 1
+                if self.poll_calls == 2:
+                    clock[0] = 3.0
+                    self.returncode = 0
+                return self.returncode
+
+            def kill(self):
+                raise AssertionError("native command must not be killed")
+
+        process = FakeNativeProcess()
+
+        def spawn_native(argv, *, stdin, stdout, stderr, launch_deadline=None):
+            spawn_calls.append(list(argv))
+            os.write(stdout, VALID)
+            return process, True, False, False
+
+        def transform(_pith_binary, _command, _output, deadline, **_kwargs):
+            self.assertEqual(clock[0], 3.0, "native capture should finish after the old shared window")
+            self.assertEqual(deadline, 3.5, "transform receives a fresh window after native completion")
+            clock[0] = 3.4
+            return json.dumps({"output": "PASS\nok pith/pkg/parser 0.001s", "parser": "tests", "passthrough": False}).encode()
+
+        packets = bytearray()
+
+        def writer(_fd, data):
+            packets.extend(data)
+            return True
+
+        with (
+            mock.patch.object(pith_adapter.time, "monotonic", side_effect=lambda: clock[0]),
+            mock.patch.object(pith_adapter, "_spawn_gated", side_effect=spawn_native),
+            mock.patch.object(pith_adapter, "_run_transform", side_effect=transform),
+        ):
+            status = pith_adapter.run_native(
+                [str(self.go), "test", "-v", "./pkg/parser"], self.pith_binary,
+                capture_seconds=30.0, transform_seconds=0.5,
+                stdout_fd=123, writer=writer, record_outcome=lambda *_args: None,
+            )
+
+        self.assertEqual((status, bytes(packets)), (0, SELECTED))
+        self.assertEqual(spawn_calls, [[str(self.go), "test", "-v", "./pkg/parser"]])
 
     def test_deadline_after_transform_preparation_publishes_raw_without_pith(self):
         real_poller = pith_adapter._new_pipe_poller

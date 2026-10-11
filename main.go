@@ -47,7 +47,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.3.0"
+const version = "v3.3.1"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
@@ -61,6 +61,7 @@ type codexWrapperRecordRequest struct {
 	DurationMs     *int64 `json:"durationMs"`
 	Outcome        string `json:"outcome"`
 }
+
 type HookInput struct {
 	ToolResponse struct {
 		LlmContent string `json:"llmContent"`
