@@ -111,7 +111,18 @@ func OptimizeHook(req HookRequest) HookResponse {
 	result := responseMetadata(req.Output, maybeRedact(req.Output, cfg), strategy, upstream)
 	result.Passthrough = true
 	reason := telemetry.DecisionUnknown
-	if !req.RawBypass && !mustPreserveOutput(req.Command, req.Output, req.ExitCode) && !diffMarkerRegex.MatchString(req.Output) {
+	validatedGoSummary, validatedGo := (&parser.TestParser{}).ParseGoVerboseSuccess(req.Command, req.Output, req.ExitCode)
+	testsEnabled, testsConfigured := req.EnabledParsers["tests"]
+	if validatedGo && !req.RawBypass && (!testsConfigured || testsEnabled) {
+		parsed := maybeRedact(validatedGoSummary, cfg)
+		if parsed == validatedGoSummary && len(parsed) < len(req.Output) {
+			result = responseMetadata(req.Output, parsed, "parser:tests", false)
+			result.Parser = "tests"
+			result.Passthrough = false
+			reason = telemetry.DecisionTransformed
+		}
+	}
+	if result.Passthrough && !req.RawBypass && !mustPreserveOutput(req.Command, req.Output, req.ExitCode) && !diffMarkerRegex.MatchString(req.Output) {
 		parts := strings.Fields(req.Command)
 		if len(parts) > 0 {
 			reason = telemetry.DecisionUnsupportedParser
@@ -148,7 +159,7 @@ func OptimizeHook(req HookRequest) HookResponse {
 				}
 			}
 		}
-	} else {
+	} else if result.Passthrough {
 		reason = telemetry.DecisionProtectedPassthrough
 	}
 	if !req.TelemetryEnabled {

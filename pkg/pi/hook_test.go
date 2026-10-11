@@ -16,6 +16,58 @@ func TestOptimizeHookUsesPithParser(t *testing.T) {
 	}
 }
 
+func TestOptimizeHookSelectsValidatedGoVerboseSuccess(t *testing.T) {
+	command := "/toolchain/go/bin/go test -v ./pkg/telemetry"
+	output := "=== RUN   TestParent\n" +
+		"=== RUN   TestParent/ErrorWord\n" +
+		"    --- PASS: TestParent/ErrorWord (0.00s)\n" +
+		"=== RUN   TestParent/FailWord\n" +
+		"    --- PASS: TestParent/FailWord (17µs)\n" +
+		"--- PASS: TestParent (1m2.5s)\n" +
+		"=== RUN   TestStandaloneError\n" +
+		"--- PASS: TestStandaloneError (0.03s)\n" +
+		"PASS\n" +
+		"ok  \tpith/pkg/telemetry\t1.206s\n"
+	want := "PASS\nok  \tpith/pkg/telemetry\t1.206s"
+	got := OptimizeHook(HookRequest{Command: command, Output: output, ExitCode: 0, TelemetryEnabled: false})
+	if got.Output != want || got.Parser != "tests" || got.Passthrough || got.MinimizationStrategy != "parser:tests" {
+		t.Fatalf("validated Go success was not selected: %#v", got)
+	}
+	if got.RetainedByteCount != len(want) || got.RetainedByteCount >= got.OriginalByteCount {
+		t.Fatalf("invalid strict reduction metadata: %#v", got)
+	}
+}
+
+func TestOptimizeHookPreservesUnvalidatedGoVerboseOutput(t *testing.T) {
+	command := "/toolchain/go/bin/go test -v ./pkg/telemetry"
+	valid := "=== RUN   TestParent\n--- PASS: TestParent (0.00s)\nPASS\nok  pith/pkg/telemetry 1s\n"
+	for name, output := range map[string]string{
+		"diagnostic":         strings.Replace(valid, "--- PASS:", "warning: fixture\n--- PASS:", 1),
+		"diff":               strings.Replace(valid, "--- PASS:", "--- change\n--- PASS:", 1),
+		"duplicate":          strings.Replace(valid, "PASS\nok", "PASS\nPASS\nok", 1),
+		"malformed-duration": strings.Replace(valid, "0.00s", "NaNs", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := OptimizeHook(HookRequest{Command: command, Output: output, ExitCode: 0})
+			if got.Output != output || !got.Passthrough || got.Parser != "" {
+				t.Fatalf("unvalidated output changed: %#v", got)
+			}
+		})
+	}
+	for name, req := range map[string]HookRequest{
+		"nonzero":  {Command: command, Output: valid, ExitCode: 1},
+		"raw":      {Command: command, Output: valid, RawBypass: true},
+		"disabled": {Command: command, Output: valid, EnabledParsers: map[string]bool{"tests": false}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := OptimizeHook(req)
+			if got.Output != valid || !got.Passthrough || got.Parser != "" {
+				t.Fatalf("guarded output changed: %#v", got)
+			}
+		})
+	}
+}
+
 func TestOptimizeHookPreservesGitInspectionOutput(t *testing.T) {
 	entries := strings.Repeat(" M pkg/file.go\n", 21)
 	cases := []string{
