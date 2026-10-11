@@ -410,10 +410,19 @@ func (r *Runner) EstimateTokens(s string) int {
 }
 
 func EstimateTokensWithHeuristic(s string, heuristic float64) int {
+	return EstimateTokensFromRuneCount(utf8.RuneCountInString(s), heuristic)
+}
+
+// EstimateTokensFromRuneCount applies the configured rune-per-token heuristic
+// when a caller has only a bounded character count and must not retain text.
+func EstimateTokensFromRuneCount(runeCount int, heuristic float64) int {
 	if heuristic <= 0 {
 		heuristic = 4.0
 	}
-	return int(float64(utf8.RuneCountInString(s)) / heuristic)
+	if runeCount <= 0 {
+		return 0
+	}
+	return int(float64(runeCount) / heuristic)
 }
 
 // Deprecated: Use Runner.EstimateTokens or EstimateTokensWithHeuristic

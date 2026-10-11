@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -46,7 +47,20 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.2.0"
+const version = "v3.3.0"
+
+const (
+	codexWrapperRecordMaxJSONBytes = 2048
+	codexWrapperRecordMaxRunes     = 1 << 20
+	codexWrapperRecordMaxDuration  = int64(24 * time.Hour / time.Millisecond)
+)
+
+type codexWrapperRecordRequest struct {
+	OriginalRunes  *int   `json:"originalRunes"`
+	DeliveredRunes *int   `json:"deliveredRunes"`
+	DurationMs     *int64 `json:"durationMs"`
+	Outcome        string `json:"outcome"`
+}
 
 type HookInput struct {
 	ToolResponse struct {
@@ -135,6 +149,14 @@ func NewRootCmd() *cobra.Command {
 		RunE:  runPiTransform,
 	}
 	piCmd.AddCommand(piTransformCmd)
+
+	codexWrapperRecordCmd := &cobra.Command{
+		Use:    "_record-codex-wrapper",
+		Short:  "Record bounded Codex wrapper outcome metadata",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE:   runCodexWrapperRecord,
+	}
 
 	var hookCmd = &cobra.Command{
 		Use:    "_hook",
@@ -225,6 +247,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(hookCmd)
 	rootCmd.AddCommand(hookPreToolCmd)
 	rootCmd.AddCommand(piCmd)
+	rootCmd.AddCommand(codexWrapperRecordCmd)
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -337,6 +360,79 @@ func runPiTransform(cmd *cobra.Command, args []string) error {
 		input.StoragePath = cfg.StoragePath
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(pi.OptimizeHook(input))
+}
+
+func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
+	data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), codexWrapperRecordMaxJSONBytes+1))
+	if err != nil {
+		return fmt.Errorf("read wrapper telemetry request")
+	}
+	if len(data) > codexWrapperRecordMaxJSONBytes {
+		return fmt.Errorf("wrapper telemetry request exceeds limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var request codexWrapperRecordRequest
+	if err := decoder.Decode(&request); err != nil {
+		return fmt.Errorf("decode wrapper telemetry request")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("wrapper telemetry request has trailing data")
+	}
+	if request.OriginalRunes == nil || request.DeliveredRunes == nil || request.DurationMs == nil {
+		return fmt.Errorf("wrapper telemetry counts are required")
+	}
+	originalRunes := *request.OriginalRunes
+	deliveredRunes := *request.DeliveredRunes
+	durationMs := *request.DurationMs
+	if originalRunes < 0 || originalRunes > codexWrapperRecordMaxRunes ||
+		deliveredRunes < 0 || deliveredRunes > codexWrapperRecordMaxRunes ||
+		durationMs < 0 || durationMs > codexWrapperRecordMaxDuration {
+		return fmt.Errorf("wrapper telemetry counts are out of range")
+	}
+	decision := telemetry.DecisionUnknown
+	passthrough := false
+	parserName := "tests"
+	switch request.Outcome {
+	case "transformed":
+		if deliveredRunes > originalRunes {
+			return fmt.Errorf("transformed wrapper output exceeds original")
+		}
+		decision = telemetry.DecisionTransformed
+	case "raw_fallback":
+		if deliveredRunes != originalRunes {
+			return fmt.Errorf("raw fallback counts must match")
+		}
+		decision = telemetry.DecisionProtectedPassthrough
+		passthrough = true
+		parserName = ""
+	default:
+		return fmt.Errorf("wrapper telemetry outcome is invalid")
+	}
+
+	// Validate configuration before opening or creating telemetry storage. The
+	// wrapper's JSON request cannot select a path, source, family, or model.
+	cfg, err := config.LoadConfigWithLegacyFallbackStrict()
+	if err != nil {
+		return err
+	}
+	tel, err := telemetry.NewPrivateTelemetry(cfg.StoragePath)
+	if err != nil {
+		return err
+	}
+	defer tel.Close()
+	return tel.Record(telemetry.ExecutionRecord{
+		Timestamp:        time.Now().UTC(),
+		Command:          "go test",
+		OriginalTokens:   runner.EstimateTokensFromRuneCount(originalRunes, 4),
+		CompressedTokens: runner.EstimateTokensFromRuneCount(deliveredRunes, 4),
+		DurationMs:       durationMs,
+		ParserUsed:       parserName,
+		IsPassthrough:    passthrough,
+		Source:           telemetry.SourceCodexWrapperPrivate,
+		Harness:          "codex",
+		DecisionReason:   decision,
+	})
 }
 
 func runConfig(cmd *cobra.Command, args []string) error {
