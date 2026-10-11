@@ -89,7 +89,7 @@ func TestCodexHookInstallPreservesConfigAndIsIdempotent(t *testing.T) {
 	wantBackups := map[string][]byte{
 		result.BinaryPath:  oldBinary,
 		result.AdapterPath: oldAdapter,
-		settingsPath:      original,
+		settingsPath:       original,
 	}
 	for _, backup := range result.Backups {
 		var originalPath string
@@ -192,17 +192,17 @@ func TestCodexHookInstallPreservesConfigAndIsIdempotent(t *testing.T) {
 
 func TestCodexHookInstallRejectsMalformedConfigWithoutOverwrite(t *testing.T) {
 	cases := map[string]string{
-		"invalid-json":        "{bad",
-		"array-root":          "[]",
-		"null-root":           "null",
-		"duplicate-root-key":  `{"hooks":{},"hooks":{"SubagentStart":[]}}`,
+		"invalid-json":         "{bad",
+		"array-root":           "[]",
+		"null-root":            "null",
+		"duplicate-root-key":   `{"hooks":{},"hooks":{"SubagentStart":[]}}`,
 		"duplicate-nested-key": `{"hooks":{"SubagentStart":[{"custom":{"x":1,"x":2}}]}}`,
-		"null-hooks":          `{"hooks":null}`,
-		"bad-event":           `{"hooks":{"PreToolUse":{}}}`,
-		"bad-group":           `{"hooks":{"PreToolUse":[1]}}`,
-		"missing-handlers":    `{"hooks":{"PreToolUse":[{"matcher":"Bash"}]}}`,
-		"bad-handler-list":    `{"hooks":{"PreToolUse":[{"hooks":{}}]}}`,
-		"bad-handler-object":  `{"hooks":{"PreToolUse":[{"hooks":[1]}]}}`,
+		"null-hooks":           `{"hooks":null}`,
+		"bad-event":            `{"hooks":{"PreToolUse":{}}}`,
+		"bad-group":            `{"hooks":{"PreToolUse":[1]}}`,
+		"missing-handlers":     `{"hooks":{"PreToolUse":[{"matcher":"Bash"}]}}`,
+		"bad-handler-list":     `{"hooks":{"PreToolUse":[{"hooks":{}}]}}`,
+		"bad-handler-object":   `{"hooks":{"PreToolUse":[{"hooks":[1]}]}}`,
 	}
 	cases["deep-json"] = `{"hooks":{"other":` + strings.Repeat("[", 130) + `null` + strings.Repeat("]", 130) + `}}`
 	for name, malformed := range cases {
