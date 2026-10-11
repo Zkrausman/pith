@@ -25,6 +25,29 @@ The native exit code is preserved when known; signals, timeout, cancellation, ov
 
 `deliveryComparison` compares the complete selected JSON packet, including its terminating newline, with an equivalent packet containing raw UTF-8 stdout and the same status and evidence references. It measures packet bytes, not model tokens or total interaction size. Failed or missing selection cannot claim a reduction; passthrough can be equal to or larger than raw output.
 
+## Codex PreToolUse adapter
+
+`pre_tool_use_pith.py` is a not-yet-installed Codex `PreToolUse` adapter. Configure it through the normal trusted hook boundary with the supported Python interpreter, this adapter, and an absolute Pith executable path. It recognizes one literal command shape, `<absolute-path>/go test -v <single-package>`, without evaluating shell syntax; it preserves all tool options and changes only the command. The wrapper executes that already-authorized native argv directly and at most once. Pith only receives completed stdout for transformation; it does not select or authorize native commands. The adapter relies on the normal trusted hook, interpreter, adapter, and Pith installation boundary and does not attest to the repository, Go binary, environment, or a particular package at every invocation. Same-user replacement of those installed files is outside this boundary.
+
+TTY descriptors or descriptor inspection errors execute the original command directly. The adapter inherits cwd, environment, stdin, and native stderr. Eligible stdout is held while the native command completes, up to a two-second selection deadline and a one-MiB cap; timeout or overflow relays the captured prefix and remaining stdout as raw bytes exactly once. Transformation uses only the remaining deadline and rechecks it after preparation and immediately before the gated Pith launch. Preparation itself can overrun the deadline, so this is not a two-second end-to-end completion guarantee. If Pith times out or returns malformed, oversized, non-UTF-8, recursive, diagnostic, or otherwise non-fidelitous output, native stdout is published unchanged. Cleanup kills only the direct Pith child and waits up to 50 ms; if reaping remains unknown, the output falls back to raw and the adapter reports cleanup as unsettled. Native status is returned separately; Pith failures never cause a native rerun.
+
+The adapter remains a small Go-test selection slice, not broad command coverage. `pith --hooks` installs the current Pith executable at `~/.pith/bin/pith`, installs this adapter at `~/.pith/hooks/codex/pre_tool_use_pith.py`, and adds only a `hooks.PreToolUse` matcher for `^Bash$` in `~/.codex/hooks.json`. The hook command uses quoted absolute paths and Python's isolated `-I -S` mode; it contains no checkout path. The installer resolves `python3` from its current `PATH` and writes that absolute interpreter path into the hook. Existing event handlers and unrelated JSON, including `SubagentStart`, are preserved. Malformed settings are rejected without replacement. Existing files are backed up before each same-directory atomic replacement. The lock serializes Pith installers only. Before replacing each target, the installer compares the captured file identity, mode, and bytes; writers that do not honor the Pith lock can still race between that check and rename. The multi-file sequence is not crash-atomic. On a detected failure, earlier replacements are rolled back only while each still matches the staged file; backups remain available.
+
+The hook is not trusted automatically. After installation, review the entry in Codex with `/hooks` and trust it there if you want it to run. To uninstall, remove or disable the Pith handler in `/hooks` or remove the handler with status message `Pith: checking Bash command (managed by pith --hooks)` and the installed adapter path from the `hooks.PreToolUse` array in `~/.codex/hooks.json`; preserve other handlers in the same group. Remove `~/.pith/hooks/codex/pre_tool_use_pith.py` only after removing the hook. Keep `~/.pith/bin/pith` if another Pith integration uses it.
+
+The installer tests use only temporary homes and fake executable contents:
+
+```sh
+go test ./pkg/install -run '^Test(CodexHookInstall|CodexInstallTransaction|CodexHookCommand|CodexConfigRead|SetupCodexHook)'
+go test . -run '^TestCodexHooksFlag'
+```
+
+The adapter's fake-only gates are:
+
+```sh
+python3 -B -m unittest -v test_pre_tool_use_pith.py
+```
+
 ## Focused tests
 
 Run from this directory:

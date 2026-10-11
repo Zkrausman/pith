@@ -17,6 +17,8 @@ graph TD
 
 ## Architecture
 
+`SetupCodexPreToolUseHook` is the Codex-only `pith --hooks` path. It installs the running Pith executable and embedded adapter at stable user paths, then updates only the user-level `hooks.PreToolUse` Bash matcher in `~/.codex/hooks.json`. It leaves Codex hook trust to the user. See `integrations/codex/README.md` for install, trust, and uninstall guidance.
+
 <!-- mermaid-start -->
 ```mermaid
 graph TD

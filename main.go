@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +26,27 @@ import (
 	"time"
 )
 
-const version = "v3.1.0"
+//go:embed integrations/codex/pre_tool_use_pith.py
+var codexPreToolUseAdapter []byte
+
+var installCodexHooksCommand = func(cmd *cobra.Command) error {
+	result, err := install.SetupCodexPreToolUseHook(codexPreToolUseAdapter)
+	if err != nil {
+		for _, backup := range result.Backups {
+			cmd.PrintErrf("Backup retained: %s\n", backup)
+		}
+		return err
+	}
+	cmd.Printf("Installed Codex PreToolUse/Bash hook in %s.\n", result.SettingsPath)
+	cmd.Printf("Adapter: %s\nPith binary: %s\n", result.AdapterPath, result.BinaryPath)
+	for _, backup := range result.Backups {
+		cmd.Printf("Backup: %s\n", backup)
+	}
+	cmd.Println("The hook is not trusted automatically. Review it in Codex with /hooks before enabling it.")
+	return nil
+}
+
+const version = "v3.2.0"
 
 type HookInput struct {
 	ToolResponse struct {
@@ -82,6 +103,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().String("source", "", "Explicit source attribution for telemetry")
 	rootCmd.PersistentFlags().String("model", "", "Model name for telemetry attribution")
 	rootCmd.PersistentFlags().Float64("model-cost", 0, "Input cost per 1M tokens for the model")
+	rootCmd.Flags().Bool("hooks", false, "Install the Codex PreToolUse hook for Bash")
 
 	var configCmd = &cobra.Command{
 		Use:   "config",
@@ -240,6 +262,13 @@ func exitCode(err error) int {
 }
 
 func runRoot(cmd *cobra.Command, args []string) error {
+	setupHooks, _ := cmd.Flags().GetBool("hooks")
+	if setupHooks {
+		if len(args) != 0 {
+			return errors.New("pith --hooks does not accept a command")
+		}
+		return installCodexHooksCommand(cmd)
+	}
 	if len(args) == 0 {
 		return cmd.Help()
 	}
