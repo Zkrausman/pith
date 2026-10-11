@@ -345,6 +345,60 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
             expected_invocations += 1
             self.assertEqual(self._invocations(), expected_invocations)
 
+    def test_capture_deadline_rechecked_when_exit_is_observed_after_eof(self):
+        clock = [0.0]
+        spawn_calls = []
+
+        class FakeNativeProcess:
+            def __init__(self):
+                self.poll_calls = 0
+                self.returncode = None
+                self.killed = False
+
+            def poll(self):
+                self.poll_calls += 1
+                if self.poll_calls >= 2:
+                    clock[0] = 0.04
+                    self.returncode = 0
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+
+        process = FakeNativeProcess()
+
+        def spawn_gated(argv, *, stdin, stdout, stderr, launch_deadline=None):
+            spawn_calls.append(list(argv))
+            if len(spawn_calls) == 1:
+                os.write(stdout, VALID)
+                return process, True, False, False
+            return None, False, False, False
+
+        packets = bytearray()
+        writes = []
+
+        def writer(_fd, data):
+            value = bytes(data)
+            writes.append(value)
+            packets.extend(value)
+            return True
+
+        with (
+            mock.patch.object(pith_adapter.time, "monotonic", side_effect=lambda: clock[0]),
+            mock.patch.object(pith_adapter, "_spawn_gated", side_effect=spawn_gated),
+        ):
+            status = pith_adapter.run_native(
+                [str(self.go), "test", "-v", "./pkg/parser"], self.pith_binary,
+                capture_seconds=0.03, transform_seconds=0.5,
+                stdout_fd=123, writer=writer,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(bytes(packets), VALID)
+        self.assertEqual(writes, [VALID])
+        self.assertEqual(len(spawn_calls), 1, "Pith must not launch after selection expiry")
+        self.assertFalse(process.killed, "selection expiry must not kill the native command")
+
     def test_pipe_preparation_and_native_read_failure_are_explicit(self):
         class ExecCalled(Exception):
             pass

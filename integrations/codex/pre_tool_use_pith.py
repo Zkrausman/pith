@@ -654,6 +654,11 @@ def run_native(
             if delivery_ok and not writer(stdout_fd, chunk):
                 delivery_ok = False
         native_status = proc.poll()
+        if eligible and time.monotonic() >= capture_deadline:
+            eligible = False
+            if captured and not writer(stdout_fd, bytes(captured)):
+                delivery_ok = False
+            captured.clear()
         if eligible and native_status == 0 and _CANCEL_SIGNAL is None and delivery_ok:
             transform_deadline = time.monotonic() + transform_seconds
             transformed = _run_transform(
