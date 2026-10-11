@@ -61,7 +61,6 @@ type codexWrapperRecordRequest struct {
 	DurationMs     *int64 `json:"durationMs"`
 	Outcome        string `json:"outcome"`
 }
-
 type HookInput struct {
 	ToolResponse struct {
 		LlmContent string `json:"llmContent"`
