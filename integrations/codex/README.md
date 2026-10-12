@@ -35,6 +35,10 @@ The adapter routes only profiles admitted by its closed argv boundary and the ex
 
 The hook is not trusted automatically. After installation, review the entry in Codex with `/hooks` and trust it there if you want it to run. To uninstall, remove or disable the Pith handler in `/hooks` or remove the handler with status message `Pith: checking Bash command (managed by pith --hooks)` and the installed adapter path from the `hooks.PreToolUse` array in `~/.codex/hooks.json`; preserve other handlers in the same group. Remove `~/.pith/hooks/codex/pre_tool_use_pith.py` only after removing the hook. Keep `~/.pith/bin/pith` if another Pith integration uses it.
 
+Private proposal observations include an optional fixed `bypassReason` label for the pre-tool eligibility gate. It distinguishes shell syntax, invalid literal input, shell reserved words or assignments, interpreters, recursive wrappers, builtins, shell environment overrides, unavailable working directories, unresolved or unsupported executable formats, and wrapper encoding failure. Quoted operator characters stay literal and do not create a shell-syntax bypass. `pith discover` shows reason counts separately from family counts; older proposals have an unknown reason. Reasons contain no command text, argv, paths, or output and remain excluded from export and sync. Install the matching binary and adapter together: a new adapter's reason-bearing requests require the new recorder, while the new recorder still accepts older requests.
+
+These counts cover only rejected proposals that reach the hook with a valid Bash command and an available Pith binary. They cannot count missing hook invocations, malformed payloads, missing Pith, recorder failures, or the wrapper's TTY/setup direct-exec fallbacks. Capture outcome and parser selection remain separate observations. A reason count is not a full denominator of app command traffic, and `other/compound` alone does not prove compound shell syntax.
+
 The installer tests use only temporary homes and fake executable contents:
 
 ```sh

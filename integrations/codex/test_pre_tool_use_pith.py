@@ -360,13 +360,56 @@ sys.exit(1 if mode == 'status_failure' else int(os.environ.get('FAKE_PITH_STATUS
         status, allowed = call("/private/sentinel/git status --token=secret-sentinel")
         self.assertEqual(status, 0)
         self.assertEqual(allowed, pith_adapter._allow())
-        self.assertEqual(submitted, [{"kind": "proposal", "family": "git status"}])
+        self.assertEqual(submitted, [{"kind": "proposal", "family": "git status",
+                                     "bypassReason": "executable_unresolved_or_format"}])
         eligible_command = shlex.join([str(self.go), "test", "-v", "./pkg/parser"])
         status, rewritten = call(eligible_command)
         self.assertEqual(status, 0)
         self.assertIn("updatedInput", rewritten["hookSpecificOutput"])
         self.assertEqual(len(submitted), 1, "eligible Go test should not create a proposal observation")
         self.assertNotIn("sentinel", json.dumps(submitted))
+
+    def test_bypass_reasons_preserve_guards_and_never_execute_commands(self):
+        cases = (
+            ("git status && true", {}, "shell_syntax"),
+            ("git status | cat", {}, "shell_syntax"),
+            ("git status > out", {}, "shell_syntax"),
+            ("git '$HOME'", {"BASH_ENV": "private-sentinel"}, "shell_environment"),
+            ("git 'unterminated", {}, "invalid_literal"),
+            ("A=sentinel git status", {}, "shell_reserved_or_assignment"),
+            ("python3 -c 'private-sentinel'", {}, "interpreter"),
+            ("env git status", {}, "recursive_wrapper"),
+            ("echo private-sentinel", {}, "shell_builtin"),
+            ("/missing/private-sentinel", {}, "executable_unresolved_or_format"),
+        )
+        for command, env, reason in cases:
+            seen = []
+            payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+            with self.subTest(reason=reason), mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(pith_adapter.subprocess, "Popen") as launch:
+                result = pith_adapter.rewrite_hook_input(
+                    payload, self.pith_binary,
+                    record_bypass=lambda binary, family, why: seen.append((family, why)),
+                )
+                self.assertEqual(result, pith_adapter._allow())
+                self.assertEqual(seen[0][1], reason)
+                self.assertEqual(len(seen), 1)
+                self.assertNotIn("private-sentinel", json.dumps(seen))
+                launch.assert_not_called()
+        reasons = []
+        self.assertEqual(pith_adapter._literal_external_argv("git 'a; b'", reasons.append), ["git", "a; b"])
+        self.assertEqual(reasons, [], "quoted shell operators remain literal")
+
+    def test_reason_recorder_rejects_free_text_and_keeps_legacy_request(self):
+        seen = []
+        with mock.patch.object(pith_adapter, "_record_private_observation", side_effect=lambda binary, req, **kw: seen.append(req)):
+            pith_adapter._record_codex_proposal(self.pith_binary, "git status", "shell_syntax")
+            pith_adapter._record_codex_proposal(self.pith_binary, "git status", "/private-sentinel")
+            pith_adapter._record_codex_proposal(self.pith_binary, "git status")
+        self.assertEqual(seen, [
+            {"kind": "proposal", "family": "git status", "bypassReason": "shell_syntax"},
+            {"kind": "proposal", "family": "git status"},
+        ])
 
     def test_hook_response_encoder_recursion_falls_back_to_allow(self):
         raw = json.dumps({
