@@ -23,10 +23,15 @@ jobs:
           cache: true
       - run: go mod download
       - run: go test -v ./...
+      - name: Race-test Codex telemetry
+        run: go test -race ./pkg/telemetry
       - run: go vet ./...
       - name: Test explicit Codex caller contract
         working-directory: integrations/codex
         run: python3 -B -m unittest -v test_capture_command.py
+      - name: Test Codex PreToolUse adapter
+        working-directory: integrations/codex
+        run: python3 -B -m unittest -v test_pre_tool_use_pith.py
       - name: Test release publication safeguards
         run: python3 -m unittest discover -s .github/tests -v
 

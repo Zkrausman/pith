@@ -158,6 +158,7 @@ type CodexCaptureObservation struct {
 // observations. It is deliberately independent from execution gain totals.
 type CodexObservationSummary struct {
 	ProposalCounts     map[string]int
+	BypassCounts       map[string]int
 	CaptureOutcomes    map[string]int
 	SelectionCounts    map[string]int
 	CaptureRecords     int
@@ -368,6 +369,16 @@ func (t *Telemetry) init() error {
 	);`)
 	if err != nil {
 		return fmt.Errorf("create Codex wrapper observation table: %w", err)
+	}
+	var bypassColumns int
+	if err := t.DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('codex_wrapper_observations') WHERE name = 'bypass_reason'").Scan(&bypassColumns); err != nil {
+		return fmt.Errorf("inspect Codex bypass reason column: %w", err)
+	}
+	if bypassColumns == 0 {
+		if _, err := t.DB.Exec(`ALTER TABLE codex_wrapper_observations ADD COLUMN bypass_reason TEXT
+			CHECK (bypass_reason IS NULL OR (kind = 'proposal' AND bypass_reason IN ('invalid_literal', 'shell_syntax', 'shell_reserved_or_assignment', 'interpreter', 'recursive_wrapper', 'shell_builtin', 'shell_environment', 'execution_cwd_unavailable', 'executable_unresolved_or_format', 'wrapper_encoding_failed'))) `); err != nil {
+			return fmt.Errorf("add Codex bypass reason column: %w", err)
+		}
 	}
 	if _, err := t.DB.Exec("CREATE INDEX IF NOT EXISTS idx_codex_wrapper_observations_timestamp ON codex_wrapper_observations(timestamp)"); err != nil {
 		return fmt.Errorf("index Codex wrapper observations: %w", err)

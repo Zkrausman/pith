@@ -50,7 +50,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.5.0"
+const version = "v3.5.1"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
@@ -61,6 +61,7 @@ const (
 type codexWrapperRecordRequest struct {
 	Kind           string `json:"kind"`
 	Family         string `json:"family"`
+	BypassReason   string `json:"bypassReason"`
 	Parser         string `json:"parser"`
 	CaptureOutcome string `json:"captureOutcome"`
 	ElapsedMs      *int64 `json:"elapsedMs"`
@@ -404,9 +405,12 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 		if !telemetry.IsCodexObservationFamilyAllowed(request.Family) {
 			return fmt.Errorf("wrapper proposal family is invalid")
 		}
+		if !telemetry.IsCodexBypassReasonAllowed(request.BypassReason) {
+			return fmt.Errorf("wrapper proposal bypass reason is invalid")
+		}
 		proposalFamily = request.Family
 	case "execution":
-		if request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
+		if request.BypassReason != "" || request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" ||
 			request.OriginalBytes != nil || request.DeliveredBytes != nil ||
 			request.Family == "" || !telemetry.IsCodexObservationFamilyAllowed(request.Family) {
 			return fmt.Errorf("wrapper execution metadata is invalid")
@@ -438,7 +442,7 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 		legacy = &request
 		privateExecution = true
 	case "capture":
-		if request.Family != "" || request.Parser != "" || request.OriginalRunes != nil || request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
+		if request.BypassReason != "" || request.Family != "" || request.Parser != "" || request.OriginalRunes != nil || request.DeliveredRunes != nil || request.DurationMs != nil || request.Outcome != "" {
 			return fmt.Errorf("wrapper capture request is invalid")
 		}
 		capture = &telemetry.CodexCaptureObservation{
@@ -450,7 +454,7 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 		}
 	case "":
 		// Continue to accept requests from an already installed v3.3.x adapter.
-		if request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" || request.Parser != "" ||
+		if request.BypassReason != "" || request.CaptureOutcome != "" || request.ElapsedMs != nil || request.Selection != "" || request.Parser != "" ||
 			request.OriginalBytes != nil || request.DeliveredBytes != nil || request.Family != "" {
 			return fmt.Errorf("wrapper telemetry request is invalid")
 		}
@@ -494,7 +498,7 @@ func runCodexWrapperRecord(cmd *cobra.Command, args []string) error {
 	}
 	defer tel.Close()
 	if proposalFamily != "" {
-		return tel.RecordCodexProposedFamily(proposalFamily)
+		return tel.RecordCodexProposal(proposalFamily, request.BypassReason)
 	}
 	if capture != nil {
 		return tel.RecordCodexCapture(*capture)
@@ -743,6 +747,17 @@ func printCodexObservationSummary(cmd *cobra.Command, summary telemetry.CodexObs
 		cmd.Println("Unsupported proposed families:")
 		for _, family := range families {
 			cmd.Printf("  %-20s %d\n", family, summary.ProposalCounts[family])
+		}
+	}
+	if len(summary.BypassCounts) > 0 {
+		reasons := make([]string, 0, len(summary.BypassCounts))
+		for reason := range summary.BypassCounts {
+			reasons = append(reasons, reason)
+		}
+		sort.Strings(reasons)
+		cmd.Println("Eligibility bypass reasons (unknown includes older rows):")
+		for _, reason := range reasons {
+			cmd.Printf("  %-32s %d\n", reason, summary.BypassCounts[reason])
 		}
 	}
 	if summary.CaptureRecords > 0 {

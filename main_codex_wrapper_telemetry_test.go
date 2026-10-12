@@ -25,6 +25,43 @@ func runWrapperRecorderForTest(t *testing.T, request string) error {
 	return cmd.Execute()
 }
 
+func TestCodexWrapperBypassReasonsValidateBeforeStorage(t *testing.T) {
+	storage := filepath.Join(t.TempDir(), "must-not-exist")
+	setWrapperRecorderEnvironment(t, storage)
+	for _, request := range []string{
+		`{"kind":"proposal","family":"python","bypassReason":"private-sentinel"}`,
+		`{"kind":"capture","captureOutcome":"incomplete","selection":"unknown","bypassReason":"shell_syntax"}`,
+		`{"kind":"execution","family":"python","originalRunes":1,"deliveredRunes":1,"durationMs":0,"outcome":"raw_fallback","bypassReason":"interpreter"}`,
+		`{"originalRunes":1,"deliveredRunes":1,"durationMs":0,"outcome":"raw_fallback","bypassReason":"interpreter"}`,
+	} {
+		if err := runWrapperRecorderForTest(t, request); err == nil {
+			t.Fatalf("invalid reason accepted: %s", request)
+		}
+	}
+	if _, err := os.Stat(storage); !os.IsNotExist(err) {
+		t.Fatalf("invalid reason created storage: %v", err)
+	}
+	if err := runWrapperRecorderForTest(t, `{"kind":"proposal","family":"other/compound","bypassReason":"shell_syntax"}`); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := telemetry.NewPrivateTelemetry(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tel.Close()
+	summary, err := tel.GetCodexObservationSummary()
+	if err != nil || summary.BypassCounts["shell_syntax"] != 1 {
+		t.Fatalf("reason was not persisted: %#v, %v", summary, err)
+	}
+	var output bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&output)
+	printCodexObservationSummary(cmd, summary)
+	if !strings.Contains(output.String(), "shell_syntax") || strings.Contains(output.String(), "private-sentinel") {
+		t.Fatalf("unsafe or missing summary: %s", output.String())
+	}
+}
+
 func setWrapperRecorderEnvironment(t *testing.T, storage string) {
 	t.Helper()
 	home := t.TempDir()

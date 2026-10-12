@@ -41,6 +41,11 @@ _CONT = re.compile(r"=== CONT\s+\S+\Z")
 _PASS = re.compile(r"--- PASS:\s+(\S+)\s+\(\d+(?:\.\d+)?s\)\Z")
 
 _FAMILY_OTHER = "other/compound"
+_BYPASS_REASONS = frozenset({
+    "invalid_literal", "shell_syntax", "shell_reserved_or_assignment",
+    "interpreter", "recursive_wrapper", "shell_builtin", "shell_environment",
+    "execution_cwd_unavailable", "executable_unresolved_or_format", "wrapper_encoding_failed",
+})
 _COMMAND_SUBCOMMANDS = {
     "git": {"status", "diff", "log", "show", "branch"},
     "go": {"test", "build", "run", "vet"},
@@ -109,25 +114,30 @@ _SHELL_RESERVED = {"!", "[[", "]]", "{", "}", "case", "coproc", "do", "done", "e
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def _literal_external_argv(command: str) -> list[str] | None:
+def _literal_external_argv(command: str, on_bypass: Callable[[str], None] | None = None) -> list[str] | None:
     """Accept a bounded argv-only external command, never shell evaluation."""
-    if not command:
+    def reject(reason: str) -> None:
+        if on_bypass is not None:
+            on_bypass(reason)
         return None
+
+    if not command:
+        return reject("invalid_literal")
     try:
         if len(command.encode("utf-8", errors="strict")) > HOOK_INPUT_LIMIT:
-            return None
+            return reject("invalid_literal")
     except UnicodeError:
-        return None
+        return reject("invalid_literal")
     quote: str | None = None
     escaped = False
     for ch in command:
         if ch in "\x00\r\n":
-            return None
+            return reject("shell_syntax")
         if escaped:
             if quote == '"' and ch not in '$`"\\':
                 # Bash preserves the backslash here; shlex.split does not.
                 # Avoid executing a different argv than the original shell.
-                return None
+                return reject("invalid_literal")
             escaped = False
             continue
         if quote == "'":
@@ -141,27 +151,27 @@ def _literal_external_argv(command: str) -> list[str] | None:
             if ch == '"':
                 quote = None
             elif ch in "$`":
-                return None
+                return reject("shell_syntax")
             continue
         if quote is None:
             if ch in "'\"":
                 quote = ch
                 continue
             if ch in ";|&()<>`$*?[]{}~#!":
-                return None
+                return reject("shell_syntax")
     if quote is not None or escaped:
-        return None
+        return reject("invalid_literal")
     try:
         argv = shlex.split(command, posix=True)
         encoded = [part.encode("utf-8", errors="strict") for part in argv]
     except (ValueError, UnicodeError):
-        return None
+        return reject("invalid_literal")
     if not argv or len(argv) > 256 or sum(map(len, encoded)) > 64 << 10:
-        return None
+        return reject("invalid_literal")
     if argv[0] in _SHELL_RESERVED or _ASSIGNMENT.match(argv[0]):
-        return None
+        return reject("shell_reserved_or_assignment")
     if not argv[0] or any("\x00" in part for part in argv):
-        return None
+        return reject("invalid_literal")
     return argv
 
 
@@ -226,24 +236,34 @@ def _supported_executable_format(path: str) -> bool:
     return magic.startswith(b"#!") or magic == b"\x7fELF"
 
 
-def _resolve_literal_executable(argv: Sequence[str], *, cwd: str | None = None) -> str | None:
+def _resolve_literal_executable(
+    argv: Sequence[str], *, cwd: str | None = None,
+    on_bypass: Callable[[str], None] | None = None,
+) -> str | None:
+    def reject(reason: str) -> None:
+        if on_bypass is not None:
+            on_bypass(reason)
+        return None
+
     name = os.path.basename(argv[0]).lower()
     command_name = name[:-4] if name.endswith(".exe") else name
     if name in _INTERPRETERS or command_name in _INTERPRETERS or _VERSIONED_INTERPRETER.fullmatch(command_name):
-        return None
-    if _is_recursive_pith_form(argv) or name in _SHELL_BUILTINS:
-        return None
+        return reject("interpreter")
+    if _is_recursive_pith_form(argv):
+        return reject("recursive_wrapper")
+    if name in _SHELL_BUILTINS:
+        return reject("shell_builtin")
     shell_options = set(os.environ.get("SHELLOPTS", "").split(":"))
     bash_options = set(os.environ.get("BASHOPTS", "").split(":"))
     if os.environ.get("BASH_ENV") or os.environ.get("ENV") or "expand_aliases" in shell_options | bash_options:
-        return None
+        return reject("shell_environment")
     if any(key.startswith("BASH_FUNC_") for key in os.environ):
-        return None
+        return reject("shell_environment")
     if cwd is None:
         try:
             cwd = os.path.realpath(os.getcwd())
         except OSError:
-            return None
+            return reject("execution_cwd_unavailable")
     if "/" in argv[0] or (os.altsep and os.altsep in argv[0]):
         execution_path = argv[0]
         validation_path = execution_path if os.path.isabs(execution_path) else os.path.join(cwd, execution_path)
@@ -255,10 +275,10 @@ def _resolve_literal_executable(argv: Sequence[str], *, cwd: str | None = None) 
             # scripts the kernel passes this filename to the interpreter, so
             # canonicalizing it changes $0 and relative resource lookup.
             return execution_path
-        return None
+        return reject("executable_unresolved_or_format")
     path_value = os.environ.get("PATH")
     if not path_value:
-        return None
+        return reject("executable_unresolved_or_format")
     for entry in path_value.split(os.pathsep):
         # Bash uses ./name for an empty PATH component and retains relative or
         # symlinked PATH components in the shebang filename passed to execve.
@@ -271,8 +291,10 @@ def _resolve_literal_executable(argv: Sequence[str], *, cwd: str | None = None) 
         )
         if not os.path.isfile(validation_path) or not os.access(validation_path, os.X_OK):
             continue
-        return execution_path if _supported_executable_format(validation_path) else None
-    return None
+        if _supported_executable_format(validation_path):
+            return execution_path
+        return reject("executable_unresolved_or_format")
+    return reject("executable_unresolved_or_format")
 
 
 def _allow(with_update: dict[str, object] | None = None) -> dict[str, object]:
@@ -313,6 +335,7 @@ def _proposal_family(command: str) -> str:
 def rewrite_hook_input(
     payload: object, pith_binary: str,
     record_proposal: Callable[[str, str], None] | None = None,
+    record_bypass: Callable[[str, str, str], None] | None = None,
 ) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
         return _allow()
@@ -328,11 +351,15 @@ def rewrite_hook_input(
     if not pith_available:
         return _allow()
     command = tool_input["command"]
-    native = _literal_external_argv(command)
+    reasons: list[str] = []
+    native = _literal_external_argv(command, reasons.append)
     execution_cwd = _execution_cwd(tool_input)
-    executable = _resolve_literal_executable(native, cwd=execution_cwd) if native is not None and execution_cwd else None
+    executable = _resolve_literal_executable(native, cwd=execution_cwd, on_bypass=reasons.append) if native is not None and execution_cwd else None
     if native is None or executable is None:
-        if record_proposal is not None:
+        reason = reasons[0] if reasons else "execution_cwd_unavailable"
+        if record_bypass is not None:
+            record_bypass(pith_binary, _proposal_family(command), reason)
+        elif record_proposal is not None:
             record_proposal(pith_binary, _proposal_family(command))
         return _allow()
     wrapper = [
@@ -343,7 +370,9 @@ def rewrite_hook_input(
         updated = shlex.join(wrapper)
         updated.encode("utf-8", errors="strict")
     except UnicodeError:
-        if record_proposal is not None:
+        if record_bypass is not None:
+            record_bypass(pith_binary, _proposal_family(command), "wrapper_encoding_failed")
+        elif record_proposal is not None:
             record_proposal(pith_binary, _proposal_family(command))
         return _allow()
     # Preserve every caller-supplied option and change only the command.
@@ -686,10 +715,15 @@ def _record_private_observation(
         return
 
 
-def _record_codex_proposal(pith_binary: str, family: str, *, timeout: float = RECORD_TIMEOUT_SECONDS) -> None:
+def _record_codex_proposal(pith_binary: str, family: str, bypass_reason: str = "", *, timeout: float = RECORD_TIMEOUT_SECONDS) -> None:
     if family not in _CODEX_PROPOSAL_FAMILIES:
         return
-    _record_private_observation(pith_binary, {"kind": "proposal", "family": family}, timeout=timeout)
+    if bypass_reason and bypass_reason not in _BYPASS_REASONS:
+        return
+    request = {"kind": "proposal", "family": family}
+    if bypass_reason:
+        request["bypassReason"] = bypass_reason
+    _record_private_observation(pith_binary, request, timeout=timeout)
 
 
 def _record_capture_observation(
@@ -1457,7 +1491,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _allow()
         else:
             result = rewrite_hook_input(
-                payload, args.pith_binary, record_proposal=_record_codex_proposal,
+                payload, args.pith_binary, record_bypass=_record_codex_proposal,
             )
     try:
         serialized = json.dumps(result, separators=(",", ":"))

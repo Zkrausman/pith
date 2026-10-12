@@ -26,6 +26,53 @@ func newPrivateObservationStore(t *testing.T) *Telemetry {
 
 func int64ptr(value int64) *int64 { return &value }
 
+func TestCodexBypassReasonMigrationValidationAndExportPrivacy(t *testing.T) {
+	tel := newPrivateObservationStore(t)
+	if err := tel.RecordCodexProposedFamily(CodexFamilyOtherCompound); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the pre-change schema with a retained legacy proposal.
+	if _, err := tel.DB.Exec("ALTER TABLE codex_wrapper_observations DROP COLUMN bypass_reason"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.init(); err != nil {
+		t.Fatalf("migration is not idempotent: %v", err)
+	}
+	if err := tel.RecordCodexProposal(CodexFamilyOtherCompound, "shell_syntax"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.RecordCodexProposal("python", "interpreter"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tel.RecordCodexProposal("python", "/private-sentinel"); err == nil {
+		t.Fatal("free-form reason accepted")
+	}
+	if _, err := tel.DB.Exec(`INSERT INTO codex_wrapper_observations (kind,family,bypass_reason) VALUES ('proposal','python','private-sentinel')`); err == nil {
+		t.Fatal("database accepted an unbounded reason")
+	}
+	if _, err := tel.DB.Exec(`INSERT INTO codex_wrapper_observations (kind,capture_outcome,selection,bypass_reason) VALUES ('capture','incomplete','unknown','shell_syntax')`); err == nil {
+		t.Fatal("database accepted a reason on a capture")
+	}
+	summary, err := tel.GetCodexObservationSummary()
+	if err != nil || summary.BypassCounts["unknown"] != 1 || summary.BypassCounts["shell_syntax"] != 1 || summary.BypassCounts["interpreter"] != 1 {
+		t.Fatalf("legacy or classified counts lost: %#v, %v", summary, err)
+	}
+	var gainRows int
+	if err := tel.DB.QueryRow("SELECT COUNT(*) FROM executions").Scan(&gainRows); err != nil || gainRows != 0 {
+		t.Fatalf("proposal reasons changed execution accounting: %d, %v", gainRows, err)
+	}
+	var exported bytes.Buffer
+	if err := tel.ExportJSONL(&exported); err != nil {
+		t.Fatal(err)
+	}
+	if exported.Len() != 0 {
+		t.Fatal("private proposal reasons were exported")
+	}
+}
+
 func TestCodexObservationNullZeroAllowlistPrivacyAndSummary(t *testing.T) {
 	tel := newPrivateObservationStore(t)
 	if err := tel.Record(ExecutionRecord{Command: "ordinary command", OriginalTokens: 20, CompressedTokens: 10, Source: "terminal"}); err != nil {

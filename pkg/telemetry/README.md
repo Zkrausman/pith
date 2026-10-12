@@ -4,6 +4,14 @@ This package manages the recording and retrieval of command execution statistics
 
 ## Decision accounting and privacy
 
+Codex proposal observations may include a fixed `bypass_reason` label identifying
+the adapter's pre-tool eligibility rejection. This additive nullable column
+preserves older rows as unknown. Only allowlisted labels are accepted, only on
+proposal rows; reasons never contain free-form text. `pith discover` shows these
+local aggregate counts without adding them to gain, JSONL export, or sync.
+The counts exclude hook misses, unavailable recorders, malformed hook inputs,
+and direct-exec fallbacks before capture, so they do not measure all app traffic.
+
 The Codex completed-output wrapper can submit only bounded rune counts,
 duration, and a fixed outcome after stdout is fully published. Pith stores the
 counts using the existing rune-per-four token estimate and fixed `go test`

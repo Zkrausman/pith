@@ -16,13 +16,21 @@ func (t *Telemetry) requirePrivateCodexStore() error {
 // RecordCodexProposedFamily records one fixed-label Bash tool proposal. It
 // stores no command text, arguments, paths, or tool-call identifiers.
 func (t *Telemetry) RecordCodexProposedFamily(family string) error {
+	return t.RecordCodexProposal(family, "")
+}
+
+// RecordCodexProposal records a fixed eligibility reason; empty means a legacy observation.
+func (t *Telemetry) RecordCodexProposal(family, bypassReason string) error {
 	if err := t.requirePrivateCodexStore(); err != nil {
 		return err
 	}
 	if !IsCodexObservationFamilyAllowed(family) {
 		return fmt.Errorf("Codex observation family is not allowlisted")
 	}
-	return t.recordCodexObservation("proposal", family, nil)
+	if !IsCodexBypassReasonAllowed(bypassReason) {
+		return fmt.Errorf("Codex bypass reason is not allowlisted")
+	}
+	return t.recordCodexObservation("proposal", family, bypassReason, nil)
 }
 
 // IsCodexObservationFamilyAllowed reports whether family is one of the fixed
@@ -30,6 +38,16 @@ func (t *Telemetry) RecordCodexProposedFamily(family string) error {
 func IsCodexObservationFamilyAllowed(family string) bool {
 	_, ok := codexObservationFamilies[family]
 	return ok
+}
+
+// IsCodexBypassReasonAllowed accepts only fixed labels, or an absent legacy reason.
+func IsCodexBypassReasonAllowed(reason string) bool {
+	switch reason {
+	case "", "invalid_literal", "shell_syntax", "shell_reserved_or_assignment", "interpreter", "recursive_wrapper", "shell_builtin", "shell_environment", "execution_cwd_unavailable", "executable_unresolved_or_format", "wrapper_encoding_failed":
+		return true
+	default:
+		return false
+	}
 }
 
 // RecordCodexCapture records bounded capture outcome metadata after stdout has
@@ -41,7 +59,7 @@ func (t *Telemetry) RecordCodexCapture(observation CodexCaptureObservation) erro
 	if err := ValidateCodexCaptureObservation(observation); err != nil {
 		return err
 	}
-	return t.recordCodexObservation("capture", "", &observation)
+	return t.recordCodexObservation("capture", "", "", &observation)
 }
 
 // ValidateCodexCaptureObservation checks the closed outcomes and bounded,
@@ -92,7 +110,7 @@ func ValidateCodexCaptureObservation(observation CodexCaptureObservation) error 
 	return nil
 }
 
-func (t *Telemetry) recordCodexObservation(kind, family string, capture *CodexCaptureObservation) error {
+func (t *Telemetry) recordCodexObservation(kind, family, bypassReason string, capture *CodexCaptureObservation) error {
 	tx, err := t.DB.Begin()
 	if err != nil {
 		return err
@@ -114,9 +132,13 @@ func (t *Telemetry) recordCodexObservation(kind, family string, capture *CodexCa
 	if family != "" {
 		familyValue = family
 	}
+	var reasonValue interface{}
+	if bypassReason != "" {
+		reasonValue = bypassReason
+	}
 	if _, err := tx.Exec(`INSERT INTO codex_wrapper_observations
-		(kind, family, capture_outcome, elapsed_ms, selection, original_bytes, delivered_bytes)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, kind, familyValue, captureOutcome, elapsedMs, selection, originalBytes, deliveredBytes); err != nil {
+		(kind, family, capture_outcome, elapsed_ms, selection, original_bytes, delivered_bytes, bypass_reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, kind, familyValue, captureOutcome, elapsedMs, selection, originalBytes, deliveredBytes, reasonValue); err != nil {
 		return err
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(CodexObservationRetentionDays) * 24 * time.Hour)
@@ -135,11 +157,12 @@ func (t *Telemetry) recordCodexObservation(kind, family string, capture *CodexCa
 func (t *Telemetry) GetCodexObservationSummary() (CodexObservationSummary, error) {
 	summary := CodexObservationSummary{
 		ProposalCounts:  make(map[string]int),
+		BypassCounts:    make(map[string]int),
 		CaptureOutcomes: make(map[string]int),
 		SelectionCounts: make(map[string]int),
 	}
 	rows, err := t.DB.Query(`SELECT kind, COALESCE(family, ''), COALESCE(capture_outcome, ''), elapsed_ms,
-		COALESCE(selection, ''), original_bytes, delivered_bytes
+		COALESCE(selection, ''), original_bytes, delivered_bytes, COALESCE(bypass_reason, 'unknown')
 		FROM codex_wrapper_observations
 		WHERE timestamp >= datetime('now', ?)`, fmt.Sprintf("-%d days", CodexObservationRetentionDays))
 	if err != nil {
@@ -147,13 +170,14 @@ func (t *Telemetry) GetCodexObservationSummary() (CodexObservationSummary, error
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var kind, family, outcome, selection string
+		var kind, family, outcome, selection, bypassReason string
 		var elapsed, original, delivered sql.NullInt64
-		if err := rows.Scan(&kind, &family, &outcome, &elapsed, &selection, &original, &delivered); err != nil {
+		if err := rows.Scan(&kind, &family, &outcome, &elapsed, &selection, &original, &delivered, &bypassReason); err != nil {
 			return summary, err
 		}
 		if kind == "proposal" {
 			summary.ProposalCounts[family]++
+			summary.BypassCounts[bypassReason]++
 			continue
 		}
 		summary.CaptureRecords++
