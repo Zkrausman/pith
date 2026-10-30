@@ -13,7 +13,7 @@
 - **Composite Commands:** Intelligent handling of shell-joined commands (e.g., `git status & git log`).
 - **Escape Hatch (`pith raw`):** Bypass parsers and truncation for complete captured output.
 - **Middle-Out Truncation:** Automatically keep the start and end of massive outputs, removing the redundant middle.
-- **Multi-LLM Integration:** Automated hook setup for Antigravity 2.0, Antigravity CLI, Gemini CLI, Claude Code, Codex, and Pi.
+- **Multi-LLM Integration:** Automated hook setup for Gemini CLI, Claude Code, Codex, and Pi. Antigravity integration is disabled pending a supported, reviewed implementation.
 - **Telemetry & Discovery:** Tracks exact token savings and identifies new optimization targets.
 - **Interactive Configuration:** Toggle parsers and adjust truncation limits via `pith config`.
 - **Interactive Dashboard:** Launch a local web-based analytics dashboard via `pith dashboard`.
@@ -33,7 +33,7 @@
 
 ### 1. Targeted Installation
 If you only want to install hooks for a specific CLI or only for the current project:
-- **Antigravity 2.0 / CLI:** `pith install --antigravity --global`
+- **Antigravity 2.0 / CLI:** Disabled. The PreToolUse callback leaves commands unchanged, and explicit Antigravity installation is rejected.
 - **Local Install (current folder):** `pith install --gemini`
 - **Global Install (specific CLI):** `pith install --claude --global`
 - **Full Global Sync:** Use `pith install` to ensure all system-wide hooks and settings are up-to-date.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"pith/pkg/telemetry"
@@ -587,7 +588,7 @@ func TestHookPreTool_StandardCommand(t *testing.T) {
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"hook-pretool", "--source", "antigravity"})
 
-	payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"git status","Cwd":"/test","IsDaemon":false}}}`
+	payload := fmt.Sprintf(`{"toolCall":{"name":"run_command","args":{"CommandLine":"git status","Cwd":%q,"IsDaemon":false}}}`, t.TempDir())
 	inBuf := bytes.NewBufferString(payload)
 	outBuf := new(bytes.Buffer)
 	cmd.SetIn(inBuf)
@@ -605,12 +606,8 @@ func TestHookPreTool_StandardCommand(t *testing.T) {
 	if resp.Decision != "allow" {
 		t.Errorf("Expected decision allow, got %s", resp.Decision)
 	}
-	if resp.Overwrite == nil || resp.Overwrite["CommandLine"] == nil {
-		t.Fatalf("Expected CommandLine overwrite in response")
-	}
-	overwritten := resp.Overwrite["CommandLine"].(string)
-	if !strings.Contains(overwritten, "pith") || !strings.Contains(overwritten, "git status") || !strings.Contains(overwritten, "--source antigravity") {
-		t.Errorf("Overwritten CommandLine unexpected: %s", overwritten)
+	if len(resp.Overwrite) != 0 {
+		t.Fatalf("non-transformable git command must pass through unchanged: %#v", resp.Overwrite)
 	}
 }
 
@@ -618,7 +615,7 @@ func TestHookPreTool_WithModelName(t *testing.T) {
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"hook-pretool", "--source", "antigravity"})
 
-	payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"git diff"}},"modelName":"gemini-3.7-flash"}`
+	payload := fmt.Sprintf(`{"toolCall":{"name":"run_command","args":{"CommandLine":"git diff","Cwd":%q}},"modelName":"gemini-3.7-flash; $(touch /tmp/nope)"}`, t.TempDir())
 	inBuf := bytes.NewBufferString(payload)
 	outBuf := new(bytes.Buffer)
 	cmd.SetIn(inBuf)
@@ -636,12 +633,8 @@ func TestHookPreTool_WithModelName(t *testing.T) {
 	if resp.Decision != "allow" {
 		t.Errorf("Expected decision allow, got %s", resp.Decision)
 	}
-	if resp.Overwrite == nil || resp.Overwrite["CommandLine"] == nil {
-		t.Fatalf("Expected CommandLine overwrite in response")
-	}
-	overwritten := resp.Overwrite["CommandLine"].(string)
-	if !strings.Contains(overwritten, "--model gemini-3.7-flash") {
-		t.Errorf("Expected --model gemini-3.7-flash in overwritten command, got: %s", overwritten)
+	if len(resp.Overwrite) != 0 {
+		t.Fatalf("non-transformable git command was rewritten: %#v", resp.Overwrite)
 	}
 }
 
@@ -719,4 +712,3 @@ func TestHookPreTool_NonRunCommand(t *testing.T) {
 		t.Errorf("Non run_command should not have overwrite, got %v", resp.Overwrite)
 	}
 }
-

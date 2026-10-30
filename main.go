@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -50,7 +49,9 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 	return nil
 }
 
-const version = "v3.5.1"
+var installPithBinaryCommand = install.Install
+
+const version = "v4.0.0"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
@@ -911,77 +912,10 @@ var identityParserNames = map[string]bool{
 }
 
 func runHookPreTool(cmd *cobra.Command, args []string) error {
-	inputData, err := io.ReadAll(cmd.InOrStdin())
-	if err != nil {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
-	}
-
-	var input PreToolHookInput
-	if err := json.Unmarshal(inputData, &input); err != nil {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
-	}
-
-	if input.ToolCall.Name != "run_command" {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
-	}
-
-	if isDaemon, ok := input.ToolCall.Args["IsDaemon"].(bool); ok && isDaemon {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
-	}
-
-	rawCmd, ok := input.ToolCall.Args["CommandLine"].(string)
-	if !ok || strings.TrimSpace(rawCmd) == "" {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
-	}
-
-	trimmed := strings.TrimSpace(rawCmd)
-	if strings.HasPrefix(trimmed, "pith") ||
-		strings.HasPrefix(trimmed, "pith.exe") ||
-		strings.Contains(trimmed, "\\pith.exe") ||
-		strings.Contains(trimmed, "/pith") ||
-		(strings.HasPrefix(trimmed, "& \"") && strings.Contains(trimmed, "pith")) {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
-	}
-
-	home, _ := os.UserHomeDir()
-	exePath := filepath.Join(home, ".pith", "bin", "pith.exe")
-	if runtime.GOOS != "windows" {
-		exePath = filepath.Join(home, ".pith", "bin", "pith")
-	}
-
-	source, _ := cmd.Flags().GetString("source")
-	if source == "" {
-		source = "antigravity"
-	}
-
-	modelName := input.ModelName
-	if modelName == "" || modelName == "unknown" || modelName == "auto" {
-		modelName = "gemini-auto"
-	}
-	modelArg := fmt.Sprintf(" --model %s", modelName)
-
-	var rewritten string
-	if runtime.GOOS == "windows" {
-		escaped := strings.ReplaceAll(rawCmd, "'", "''")
-		rewritten = fmt.Sprintf("& \"%s\" --source %s%s -- '%s'", exePath, source, modelArg, escaped)
-	} else {
-		escaped := strings.ReplaceAll(rawCmd, "'", "'\\''")
-		rewritten = fmt.Sprintf("\"%s\" --source %s%s -- '%s'", exePath, source, modelArg, escaped)
-	}
-
-	output := PreToolHookOutput{
-		Decision: "allow",
-		Overwrite: map[string]interface{}{
-			"CommandLine": rewritten,
-		},
-	}
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(output)
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(PreToolHookOutput{Decision: "allow"})
 }
 
 func runInstall(cmd *cobra.Command, args []string) error {
-	if err := install.Install(); err != nil {
-		return err
-	}
 	all, _ := cmd.Flags().GetBool("all")
 	gemini, _ := cmd.Flags().GetBool("gemini")
 	claude, _ := cmd.Flags().GetBool("claude")
@@ -989,6 +923,12 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	piHook, _ := cmd.Flags().GetBool("pi")
 	antigravity, _ := cmd.Flags().GetBool("antigravity")
 	global, _ := cmd.Flags().GetBool("global")
+	if antigravity {
+		return fmt.Errorf("Antigravity integration is disabled pending a supported, reviewed implementation")
+	}
+	if err := installPithBinaryCommand(); err != nil {
+		return err
+	}
 	if !all && !gemini && !claude && !codex && !piHook && !antigravity {
 		all = true
 		if !cmd.Flags().Changed("global") {
@@ -1013,11 +953,6 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	if all || piHook {
 		if err := install.SetupPiHook(); err != nil {
 			cmd.PrintErrf("Pi hook failed: %v\n", err)
-		}
-	}
-	if all || antigravity {
-		if err := install.SetupAntigravityHook(global); err != nil {
-			cmd.PrintErrf("Antigravity hook failed: %v\n", err)
 		}
 	}
 	return nil
