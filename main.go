@@ -51,7 +51,7 @@ var installCodexHooksCommand = func(cmd *cobra.Command) error {
 
 var installPithBinaryCommand = install.Install
 
-const version = "v3.5.2"
+const version = "v4.0.0"
 
 const (
 	codexWrapperRecordMaxJSONBytes = 2048
